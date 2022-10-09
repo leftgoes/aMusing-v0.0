@@ -5,7 +5,23 @@
 
 ## Measure
 implemented measures appearing consecutively
-[image.py](https://github.com/leftgoes/aMusing/blob/main/image.py)
+[image.py](https://github.com/leftgoes/aMusing/blob/main/image.py) tested with
+- clefs
+- dynamics
+- glissandi
+- grace notes
+- hairpins
+- notes
+  - accidentals
+  - beams
+  - stems
+- pedals
+- text
+  - expressions
+  - staff text
+- time signatures
+- tremolos
+
 
 ## Submeasure
 WIP
