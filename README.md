@@ -1,7 +1,7 @@
 # aMusing
 - programmatic animation of sheet music
   - notes appearing consecutively
-  - uses MuseScore as notation software
+  - uses [MuseScore](https://musescore.org/) as notation software
 
 ## Measure
 implemented measures appearing consecutively
