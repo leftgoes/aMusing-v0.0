@@ -5,7 +5,8 @@ from xml.etree.ElementTree import ElementTree
 
 
 class MuseScore:
-    _removing_dtypes: set = {'dynamics', 'words', 'octave-shift', 'pedal', 'wedge'}
+    _removing_direction: set = {'dynamics', 'words', 'octave-shift', 'pedal', 'wedge'}
+    _removing_note: list = ['accidental', 'beam', 'notations']
 
     def __init__(self, log_file: str | None = None) -> None:
         logging.basicConfig(filename=log_file, level=logging.INFO, format='[%(levelname)s:%(filename)s:%(lineno)d] %(message)s')
@@ -32,7 +33,13 @@ class MuseScore:
                 fifths = attributes.find('key/fifths')
                 if fifths is not None:
                     logging.debug(f'measure {n}, new_key={fifths.text}')
-                attributes.remove(attributes.find('key'))
+                    attributes.remove(attributes.find('key'))
+                
+                clef = attributes.find('clef')
+                if clef is not None: attributes.remove(clef)
+
+                time = attributes.find('time')
+                if time is not None: time.attrib.update({'print-object': 'no'})
 
             if n <= max_measure: continue
 
@@ -40,7 +47,7 @@ class MuseScore:
                 if direction.tag != 'direction': continue
 
                 direction_type = direction.find('direction-type')
-                for t in self._removing_dtypes:
+                for t in self._removing_direction:
                     dtype = direction_type.find(t)
                     if dtype is not None:
                         direction_type.remove(dtype)
@@ -51,21 +58,15 @@ class MuseScore:
                 note.attrib.update({'print-object': 'no'})
                 if note.find('rest') is not None: continue
 
-                for accidental in note.findall('accidental'):
-                    note.remove(accidental)
+                for t in self._removing_note:
+                    elem = note.find(t)
+                    if elem is not None: note.remove(elem)
+
+                stem = note.find('stem')
+                if stem is not None: stem.text = 'none'
 
                 alter = note.find('pitch/alter')
                 if alter is not None: note.find('pitch').remove(alter)
-                
-                for stem in note.findall('stem'):
-                    stem.text = 'none'
-
-                beam = note.find('beam')
-                if beam is not None:
-                    note.remove(beam)
-                
-                for notations in note.findall('notations'):
-                    note.remove(notations)
             
         self._tree = ElementTree(root)
         logging.info(f'parsed {musicxml_file=!r} to tree')
@@ -78,14 +79,17 @@ class MuseScore:
         os.system(f'MuseScore3.exe {musicxml_file} --export-to {to_file} -r {dpi}')
         logging.info(f'exported {musicxml_file=!r} to {to_file=!r} with {dpi=}')
     
-    def convert(self, musicxml_file: str, to_file: str, max_measure: int, dpi: int = 300) -> None:
+    def convert(self, musicxml_file: str, to_file: str, max_measure: int, dpi: int = 300, delete_temp: bool = True) -> None:
         self._read_musicxml(musicxml_file, max_measure)
         self._write_musicxml('__temp__.musicxml')
-        self._export('__temp__.musicxml', to_file)
+        self._export('__temp__.musicxml', to_file=to_file, dpi=dpi)
+
         to_file_split = os.path.splitext(to_file)
+        if os.path.exists(to_file): os.remove(to_file)
         os.rename(f'{to_file_split[0]}-1' + to_file_split[1], to_file)  # Musescore seems to append '-1' to the filename (probably part number) and this is a dirty fix
-        os.remove('__temp__.musicxml')
-        logging.info('removed \'__temp__.musicxml\'')
+        if delete_temp:
+            os.remove('__temp__.musicxml')
+            logging.info('removed \'__temp__.musicxml\'')
 
 
 if __name__ == '__main__':
