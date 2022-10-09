@@ -1,4 +1,7 @@
 # aMusing
-animate sheet music by letting the notes appear one after another
+- Animation of sheet music
+  - notes appear one after another
+  - MuseScore
 
-Inspiration: https://www.youtube.com/kq6BofwPSJI
+## Inspiration
+https://www.youtube.com/kq6BofwPSJI
