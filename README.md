@@ -16,6 +16,8 @@ implemented measures appearing consecutively
   - beams
   - stems
 - pedals
+- rests
+- slurs
 - text
   - expressions
   - staff text
