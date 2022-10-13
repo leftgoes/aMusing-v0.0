@@ -2,7 +2,7 @@
 - programmatic animation of sheet music
   - notes appearing consecutively
   - uses [MuseScore](https://musescore.org/) as notation software
-- [animate.py](https://github.com/leftgoes/aMusing/blob/main/animate.py) with example [example.py](https://github.com/leftgoes/aMusing/blob/main/example.py)
+- [animate.py](https://github.com/leftgoes/aMusing/blob/main/animate.py) with example [example.py](https://github.com/leftgoes/aMusing/blob/main/example/example.py)
 
 ## Measure
 *implemented* measures appearing consecutively
