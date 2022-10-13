@@ -12,9 +12,9 @@
 
 ## ToDo
 1. doesn't hide tuplet numbers/brackets
-  - don't know if possible using musicxml without hacks
+  a. don't know if possible using musicxml without hacks
 2. increase efficiency of making the score
-  - OMR, e. g. [Audiveris](https://github.com/Audiveris)
+  a. OMR, e. g. [Audiveris](https://github.com/Audiveris)
 3. programmatically combine frames to high quality video
 
 ## Inspiration
