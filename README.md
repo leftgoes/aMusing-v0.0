@@ -11,7 +11,7 @@
 *implemented* subdivsions of measure appearing consecutively
 
 ## ToDo
-- doesn't hide tuplet numbers/brackets
+- hide tuplet numbers/brackets
   - don't know if possible using musicxml without hacks
 - increase efficiency of making the score
   - OMR, e. g. [Audiveris](https://github.com/Audiveris)
