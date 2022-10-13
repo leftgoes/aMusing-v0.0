@@ -12,6 +12,7 @@
 
 ## ToDo
 - doesn't hide tuplet numbers/brackets
+  - don't know if possible using musicxml without hacks
 
 ## Inspiration
 https://www.youtube.com/kq6BofwPSJI
