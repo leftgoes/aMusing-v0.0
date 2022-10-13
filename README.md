@@ -11,6 +11,7 @@
 *implemented* subdivsions of measure appearing consecutively
 
 ## ToDo
+- connect notes with incomplete beam (in `n=max_measure`)
 - hide tuplet numbers/brackets
   - don't know if possible using musicxml without hacks
 - increase efficiency of making the score
