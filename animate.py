@@ -1,7 +1,6 @@
 import copy
 import logging
 import os
-from tkinter import W
 from typing import Callable, Literal
 
 import xml.etree.ElementTree as ETree
