@@ -121,13 +121,14 @@ class MuseScore:
             keep_first_tuplet: bool = False
             remove_notes: list[Element] = []
             for note in measure:
-                duration_elem = note.find('duration')
-                if note.tag == 'backup':
-                    duration -= int(duration_elem.text)
-                else:
+                if note.find('chord') is None:
                     duration_elem = note.find('duration')
-                    if duration_elem is not None:
-                        duration += int(duration_elem.text)
+                    if note.tag == 'backup':
+                        duration -= int(duration_elem.text)
+                    else:
+                        duration_elem = note.find('duration')
+                        if duration_elem is not None:
+                            duration += int(duration_elem.text)
                 
                 if note.tag != 'note': continue
                 time_mod_elem = note.find('time-modification')
