@@ -4,6 +4,7 @@
   - uses [MuseScore](https://musescore.org/) as notation software
 
 ## ToDo
+- logarithmic frequency scale
 - increase efficiency of making the score
   - OMR, e. g. [Audiveris](https://github.com/Audiveris)
 - programmatically combine frames to high quality video
