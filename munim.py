@@ -1,28 +1,56 @@
 from audio2numpy import open_audio
+from collections.abc import Iterator
 import cv2
 from matplotlib.cm import get_cmap
 import numpy as np
-from scipy.ndimage import zoom
+from scipy.io.wavfile import write as write_wav
+from scipy.ndimage import zoom, gaussian_filter
+from scipy.signal import argrelmax
 
-from leftgoes.utils import Progress
+from leftgoes.utils import Progress, linmap
 
 NoteInfo = str | float
 
 
 class Munim:
-    _a4_hz: float = 440
-    _note_offset: dict[str, int] = {'C': -9, 'D': -7, 'E': -5, 'F': -4,
-                                    'G': -2, 'A': 0, 'B': 2}
-    _accidental_offset: dict[str, int] = {'bb': -2, 'b': -1, '#': 1, 'x': 2}
-
-    def __init__(self, fps: int = 30, width: int = 1920, height: int = 1080, cmap: str = 'magma') -> None:
+    def __init__(self, fps: int = 30, width: int = 1920, height: int = 1080) -> None:
         self.fps = fps
         self.width = width
         self.height = height
-        self.sample_rate: int = 0
+
+        self.sample_rate: int = None
 
         self._audio: np.ndarray = None
         self._progress = Progress()
+    
+    @property
+    def frame_length(self) -> int:
+        return round(self.sample_rate / self.fps)
+
+    def frames(self) -> Iterator[int]:
+        for t0 in range(0, self._audio.shape[0] - self.frame_length, self.frame_length):
+            yield t0
+
+    def read_audio(self, filepath: str, start: float = 0, end: float = 1) -> None:
+        data, self.sample_rate = open_audio(filepath)
+        if len(data.shape) == 1:
+            self._audio = data[round(start * data.shape[0]):round(end * data.shape[0]) - 1]
+        elif len(data.shape) == 2:
+            self._audio = sum(data[round(start * data.shape[0]):round(end * data.shape[0]) - 1, i] for i in range(data.shape[1])) / data.shape[1]
+
+    def render_video(self, *args, **kwargs) -> None:
+        return
+
+
+class Spectrum(Munim):
+    a4_hz: float = 440
+    _note_offset: dict[str, int] = {'C': -9, 'D': -7, 'E': -5, 'F': -4,
+                                    'G': -2, 'A': 0, 'B': 2}
+    _accidental_offset: dict[str, int] = {'bb': -2, 'b': -1, '#': 1, 'x': 2}  
+
+    def __init__(self, fps: int = 30, width: int = 1920, height: int = 1080, cmap: str = 'magma') -> None:
+        super().__init__(fps, width, height)
+
         self._transformed: np.ndarray = None
 
         self.__cmap = get_cmap(cmap)
@@ -32,17 +60,17 @@ class Munim:
         if isinstance(note, float): return note
         elif not isinstance(note, str): raise ValueError(f'cannot get frequency from {note!r}')
 
-        pitch = Munim._note_offset[note[0].upper()]
+        pitch = Spectrum._note_offset[note[0].upper()]
         if len(note) == 1:
-            return Munim._a4_hz * 2**(pitch/12)
+            return Spectrum.a4_hz * 2**(pitch/12)
         elif len(note) == 2:
-            if note[1] in Munim._accidental_offset:
-                return Munim._a4_hz * 2**((pitch + Munim._accidental_offset[note[1]])/12)
+            if note[1] in Spectrum._accidental_offset:
+                return Spectrum.a4_hz * 2**((pitch + Spectrum._accidental_offset[note[1]])/12)
             else:
-                return Munim._a4_hz * 2**(pitch/12 + int(note[1]) - 4)
+                return Spectrum.a4_hz * 2**(pitch/12 + int(note[1]) - 4)
         else:
             accidental, octave = note[1:-1], note[-1]
-            return Munim._a4_hz * 2**((pitch + Munim._accidental_offset[accidental])/12 + int(octave) - 4)
+            return Spectrum.a4_hz * 2**((pitch + Spectrum._accidental_offset[accidental])/12 + int(octave) - 4)
 
 
     def cmap(self, x: float) -> np.ndarray:
@@ -52,13 +80,6 @@ class Munim:
         freq = self._transformed - self._transformed.min()
         freq = np.clip(highlight_clip * freq/freq.max(), 0, 1)**gamma
         return 1 - freq if invert else freq
-    
-    def read_audio(self, filepath: str) -> None:
-        data, self.sample_rate = open_audio(filepath)
-        if len(data.shape) == 1:
-            self._audio = data
-        elif len(data.shape) == 2:
-            self._audio = sum(data[:, i] for i in range(data.shape[1])) / data.shape[1]
 
     def render_video(self, filepath: str, fourcc: str = 'mp4v', gamma: float = 1, highlight_clip: float = 1, invert: bool = False, show_frames: bool = False) -> None:
         self._progress.start()
@@ -89,49 +110,51 @@ class Munim:
         return
 
 
-class STFT(Munim):
+class STFT(Spectrum):
     def __init__(self, fps: int = 30, width: int = 1920, height: int = 1080, cmap: str = 'magma') -> None:
         super().__init__(fps, width, height, cmap)
 
     def transform(self, lowest: NoteInfo = 'A0', highest: NoteInfo = 'C8', snippet_frames_num: float = 10) -> None:
         min_hz, max_hz = self.hz(lowest), self.hz(highest)
-        frame_sample_num: int = round(self.sample_rate / self.fps)
-        length = round(snippet_frames_num * frame_sample_num)
+        length = round(snippet_frames_num * self.frame_length)
 
         stft_x = np.fft.fftfreq(length, 1 / self.sample_rate)
         indices = np.where(np.logical_and(min_hz <= stft_x, stft_x <= max_hz))
         freq_sample_num = indices[0].shape[0]
 
-        self._transformed = np.empty((int(self._audio.shape[0] / frame_sample_num), freq_sample_num))
-        for i, t0 in enumerate(np.arange(0, self._audio.shape[0] - frame_sample_num, frame_sample_num)):
+        self._transformed = np.empty((int(self._audio.shape[0] / self.frame_length), freq_sample_num))
+        for i, t0 in enumerate(self.frames()):
             snippet = self._audio[t0:t0 + length]
             stft_y = np.fft.fft(snippet)
 
             self._transformed[i, :] = np.abs(stft_y[indices])
 
 
-class Morlet(Munim):
+class Wavelet(Spectrum):
     def __init__(self, fps: int = 30, width: int = 1920, height: int = 1080, cmap: str = 'magma') -> None:
         super().__init__(fps, width, height, cmap)
     
+    @staticmethod
+    def gaussian(x: np.ndarray, sigma: float) -> np.ndarray:
+        return np.exp(-x**2/(2 * sigma**2))
+
+    def psi(self, x: np.ndarray, f: float, sigma: float) -> np.ndarray:
+        return
+
     def transform(self, lowest: NoteInfo = 'A0', highest: NoteInfo = 'C8', *, sigma_seconds: float = 0.1, radius: float = 4) -> None:
         min_hz, max_hz = self.hz(lowest), self.hz(highest)
         
-        frame_sample_num: int = round(self.sample_rate / self.fps)
         sigma = round(self.sample_rate * sigma_seconds)  # sigma in samples
         length = round(2*radius*sigma)
-
-        gaussian = lambda x: np.exp(-x**2/(2 * sigma**2))
-        sin = lambda x, f: np.exp(1j * 2*np.pi*f * x)
 
         freqs = 2**np.linspace(np.log2(min_hz), np.log2(max_hz), self.width)
         x = np.arange(-radius*sigma, radius*sigma)
 
         self._progress.start()
-        self._transformed = np.empty((int(self._audio.shape[0] / frame_sample_num) + 1, freqs.shape[0]))
+        self._transformed = np.empty((int(self._audio.shape[0] / self.frame_length) + 1, freqs.shape[0]))
         for j, f in enumerate(freqs):
-            wavelet: np.ndarray = gaussian(x) * sin(x, f/self.sample_rate)
-            for i, t0 in enumerate(np.arange(0, self._audio.shape[0] - frame_sample_num, frame_sample_num)):
+            wavelet = self.psi(x, f/self.sample_rate, sigma)
+            for i, t0 in enumerate(self.frames()):
                 if t0 + length > self._audio.shape[0] - 1:
                     snippet = self._audio[t0:]
                     self._transformed[i, j] = np.abs(np.dot(wavelet[:snippet.shape[0]], snippet))
@@ -140,3 +163,92 @@ class Morlet(Munim):
                     self._transformed[i, j] = np.abs(np.dot(wavelet, snippet))
                 self._progress.string(((i + 1)/self._transformed.shape[0] + j)/freqs.shape[0])
         self._progress.string(1)
+
+
+class Morlet(Wavelet):
+    def __init__(self, fps: int = 30, width: int = 1920, height: int = 1080, cmap: str = 'magma') -> None:
+        super().__init__(fps, width, height, cmap)
+    
+    def psi(self, x: np.ndarray, f: float, sigma: float) -> np.ndarray:
+        return self.gaussian(x, sigma) * np.exp(1j * 2*np.pi*f * x)
+
+
+class Custom(Wavelet):
+    def __init__(self, fps: int = 30, width: int = 1920, height: int = 1080, cmap: str = 'magma') -> None:
+        super().__init__(fps, width, height, cmap)
+        self._calib: np.ndarray = None
+    
+    def psi(self, x: np.ndarray, f: float, sigma: float) -> np.ndarray:
+        y = np.zeros(x.shape, dtype=np.complex_)
+        for n, amp, phi in self._calib:
+            y += amp * np.exp(1j * 2*np.pi * n*f * x + phi)
+        return self.gaussian(x, sigma) * y
+
+    def calibrate(self, filepath: str, base_hz: float, overtones: int = 25, radius_channels: int = 1, start: float = 0, end: float = 1) -> int:
+        data, sample_rate = open_audio(filepath)
+        if len(data.shape) == 1:
+            data = data[round(start * data.shape[0]):round(end * data.shape[0]) - 1]
+        elif len(data.shape) == 2:
+            data = sum(data[round(start * data.shape[0]):round(end * data.shape[0]) - 1, i] for i in range(data.shape[1])) / data.shape[1]
+        else:
+            return
+        
+        y = np.fft.fft(data)
+        x = np.fft.fftfreq(y.size, 1/sample_rate)[:y.size // 2]
+        y = y[:y.size // 2]
+        
+        self._calib = np.empty((overtones, 3))
+        maxima, = argrelmax(y[:50000], order=1000)
+        for i, maximum in enumerate(maxima):
+            if i == overtones: break
+            index_min = maximum - radius_channels + 1
+            index_max = maximum + radius_channels
+            self._calib[i, 0] = np.sum(x[index_min:index_max]/base_hz)/(index_max - index_min)
+            self._calib[i, 1] = np.sum(np.abs(y[index_min:index_max]))/(index_max - index_min)
+            self._calib[i, 2] = np.sum(np.angle(y[index_min:index_max]))/(index_max - index_min)
+        return len(maxima)
+        
+    def hear_tone(self, filepath: str, base_hz: float, length_seconds: float = 2, sample_rate: int | None = None) -> None:
+        if sample_rate is None: sample_rate = self.sample_rate
+        x = np.linspace(0, length_seconds, round(sample_rate * length_seconds))
+        y = np.zeros(x.shape)
+
+        for n, amp, phi in self._calib:
+            y += (amp * np.exp(1j * 2*np.pi * n * base_hz * x + phi)).real
+        y /= np.abs(y).max()
+
+        write_wav(filepath, sample_rate, np.int16(32767 * y))
+
+class Lissajous(Munim):
+    def __init__(self, fps: int = 30, width: int = 1080) -> None:
+        super().__init__(fps, width, -1)
+    
+    def read_audio(self, filepath: str, start: float = 0, end: float = 1) -> None:
+        data, self.sample_rate = open_audio(filepath)
+
+        if len(data.shape) in (1, 2):
+            self._audio = data[round(start * data.shape[0]):round(end * data.shape[0]) - 1]/np.abs(data).max()
+
+    def render_video(self, filepath: str, fourcc: str = 'mp4v', darken: float = 1e-3, *, sigma: float | None = None) -> None:
+        self._progress.start()
+        videoout = cv2.VideoWriter(filepath, cv2.VideoWriter_fourcc(*fourcc), self.fps, (self.width, self.width), False)
+        length = self.frame_length
+
+        frame = np.zeros((self.width, self.width))
+        if len(self._audio.shape) == 1:
+            pass
+        else:
+            for i, (right, left) in enumerate(self._audio):
+                x = int(linmap(right, (-1, 1), (0, self.width)))
+                y = int(linmap(left, (-1, 1), (0, self.width)))
+                if sigma is not None:
+                    frame = gaussian_filter(frame, sigma)
+                frame[y, x] = 255
+                frame *= 1 - darken
+
+                if i % length == 0:
+                    videoout.write(np.uint8(frame))
+                    self._progress.string(i/self._audio.shape[0])
+            
+        self._progress.string(1)
+        videoout.release()

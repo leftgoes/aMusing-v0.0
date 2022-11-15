@@ -32,13 +32,14 @@ class Note:
                                  '256th': n256}
 
 class Amusing:
-    _ignore_in_measure: set[str] = {'startRepeat', 'endRepeat', 'LayoutBreak'}
-    _grace_note: set[str] = {'grace4', 'acciaccatura', 'appoggiatura', 'grace8after', 'grace16', 'grace16after', 'grace32', 'grace32after'}
-    
     first_measure_num: int = 0
     musescore_executable_path: str = 'MuseScore3.exe'
     temp_filename: str = '.amusing_thread'
     tempdir = '__temp__'
+
+    _input_types: set[str] = {'.mscx', '.mscz'}
+    _ignore_in_measure: set[str] = {'stretch', 'startRepeat', 'endRepeat', 'LayoutBreak', 'vspacerUp', 'vspacerDown'}
+    _grace_note: set[str] = {'grace4', 'acciaccatura', 'appoggiatura', 'grace8after', 'grace16', 'grace16after', 'grace32', 'grace32after'}
 
     def __init__(self, width: int, outdir: str = 'frames', *, 
                        threads: int = 8, log_file: str | None = None,
@@ -52,11 +53,13 @@ class Amusing:
         self.progress = Progress()
 
         self._tree: ElementTree = None
-        self._timesigs: np.ndarray
-        self._score_width: float
-        self._page_num: int
+        self._timesigs: np.ndarray = None
+        self._score_width: float = None
+        self._page_num: int = None
+        self._protected: set[Element] = None
 
         self.__exceptions: list[list[Exception]] = [[] for _ in range(self.threads)]
+        self.__filepath: str = None
         self.__print_thread: int = 0
 
         logging.basicConfig(filename=log_file,
@@ -64,25 +67,40 @@ class Amusing:
                             format='[%(levelname)s:%(filename)s:%(lineno)d] %(message)s')
 
     @staticmethod
-    def _remove_temp(filepath: str) -> None:
+    def __convert(from_path: str, to_path: str, dpi: int | None = None) -> None:
+        cmd = f'{Amusing.musescore_executable_path} {from_path} --export-to {to_path}'
+        if dpi is not None:
+            cmd += f' -r {dpi}'
+        os.system(cmd)
+
+    @staticmethod
+    def _remove_temp(filepath: str) -> bool:
         if os.path.exists(filepath):
             os.remove(filepath)
             logging.info(f'removed {filepath!r}')
+            return True
         else:
             logging.warning(f'tried to remove {filepath!r} but not found')
-
+            return False
+    
     @staticmethod
-    def _set_visible(element: Element) -> None:
+    def _set_invisible(element: Element) -> None:
+        visible = Element('visible')
+        visible.text = '0'
+        element.insert(0, visible)
+
+    def _set_visible(self, element: Element) -> None:
+        if element in self._protected: return
         for visible in element.findall('visible'):
             element.remove(visible)
-    
+
     def _generate_sublevels(self, element: Element, n: int) -> Iterator[Element]:
         yield element
         if n >= 1:
             for elem in element:
                 for e in self._generate_sublevels(elem, n - 1):
                     yield e
-
+    
     def _sort_jobs(self) -> None:
         self.jobs = dict(sorted(self.jobs.items()))
 
@@ -99,7 +117,7 @@ class Amusing:
                 os.remove(os.path.join(self.outdir, f'frm{frame:04d}-{i}.png'))
 
     def _export(self, musicxml_path: str, to_path: str) -> None:
-        os.system(f'{self.musescore_executable_path} {musicxml_path} --export-to {to_path} -r {self.width / self._score_width}')
+        self.__convert(musicxml_path, to_path, self.width / self._score_width)
         logging.info(f'exported {musicxml_path=!r} to {to_path=!r}')
     
     def _read_timesigs(self) -> None:
@@ -212,15 +230,28 @@ class Amusing:
         return frame
 
     def read(self, filepath: str) -> None:
-        self._tree = parse_etree(filepath)
+        self.__filepath = os.path.splitext(filepath)
+        if self.__filepath[1] not in self._input_types:
+            return
+        elif self.__filepath[1] == '.mscz':
+            self.__convert(filepath, self.tempdir + '.score.mscx')
+            self._tree = parse_etree(self.tempdir + '.score.mscx')
+        else:
+            self._tree = parse_etree(filepath)
         root = self._tree.getroot()
 
         self._score_width = float(root.find('Score/Style/pageWidth').text)
         self._page_num = 1
-        for element in self._generate_sublevels(root, 5):
+        self._protected = set()
+        for element in self._generate_sublevels(root, 8):
             if element.tag == 'LayoutBreak':
                 if element.find('subtype').text == 'page':
                     self._page_num += 1
+            elif element.tag == 'Rest':
+                if element.find('visible') is None:
+                    self._protected.add(element)
+                    self._set_invisible(element)
+        print(len(self._protected))
         self._read_timesigs()
 
     def add_job(self, measures: int | Sequence[int] | None, subdivision: float) -> None:
@@ -231,6 +262,9 @@ class Amusing:
             self.jobs.update({measure - self.first_measure_num: subdivision for measure in measures})
             logging.info(f'added job with {len(measures)} measures')
 
+    def delete_jobs(self) -> None:
+        self.jobs = {}
+    
     def generate_frames(self) -> None:
         logging.info(f'generate frames using {self.threads} process{"es" if self.threads != 1 else ""}')
     
@@ -259,6 +293,8 @@ class Amusing:
             logging.info('remove temp files')
             for n in range(self.threads):
                 self._remove_temp(f'{self.tempdir}\\{self.temp_filename}-{n:02d}.mscx')
+            if self.__filepath[1] == '.mscz':
+                self._remove_temp(self.tempdir + '.score.mscx')
         
         if len(os.listdir(self.tempdir)) == 0:
             os.rmdir(self.tempdir)
