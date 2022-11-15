@@ -1,4 +1,5 @@
 # aMusing
+- [Installation](#installation)
 - [Introduction](#introduction)
 - [Animation](#animation)
     - [Amusing](#amusing-1)
@@ -6,6 +7,11 @@
 - [ToDo](#todo)
 - [Inspiration](#inspiration)
 - [Examples](#examples)
+
+## Installation
+```python
+pip install amusing
+```
 
 ## Introduction
 - programmatic animation of sheet music

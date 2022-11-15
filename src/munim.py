@@ -7,7 +7,7 @@ from scipy.io.wavfile import write as write_wav
 from scipy.ndimage import zoom, gaussian_filter
 from scipy.signal import argrelmax
 
-from leftgoes.utils import Progress, linmap
+from .leftgoes import Progress, linmap
 
 NoteInfo = str | float
 

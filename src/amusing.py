@@ -7,7 +7,7 @@ import os
 import traceback
 from xml.etree.ElementTree import Element, ElementTree, parse as parse_etree
 
-from leftgoes.utils import Progress
+from .leftgoes import Progress
 
 
 class Note:
