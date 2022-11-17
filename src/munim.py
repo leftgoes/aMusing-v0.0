@@ -13,7 +13,7 @@ NoteInfo = str | float
 
 
 class Munim:
-    def __init__(self, fps: int = 30, width: int = 1920, height: int = 1080) -> None:
+    def __init__(self, fps: int = 30, width: int = 1920, height: int = 1080, cmap: str = 'magma') -> None:
         self.fps = fps
         self.width = width
         self.height = height
@@ -22,10 +22,15 @@ class Munim:
 
         self._audio: np.ndarray = None
         self._progress = Progress()
+
+        self._cmap = get_cmap(cmap)
     
     @property
     def frame_length(self) -> int:
         return round(self.sample_rate / self.fps)
+
+    def cmap(self, x: float) -> np.ndarray:
+        return
 
     def frames(self) -> Iterator[int]:
         for t0 in range(0, self._audio.shape[0] - self.frame_length, self.frame_length):
@@ -49,11 +54,9 @@ class Spectrum(Munim):
     _accidental_offset: dict[str, int] = {'bb': -2, 'b': -1, '#': 1, 'x': 2}  
 
     def __init__(self, fps: int = 30, width: int = 1920, height: int = 1080, cmap: str = 'magma') -> None:
-        super().__init__(fps, width, height)
+        super().__init__(fps, width, height, cmap)
 
         self._transformed: np.ndarray = None
-
-        self.__cmap = get_cmap(cmap)
 
     @staticmethod
     def hz(note: NoteInfo) -> float:
@@ -72,9 +75,8 @@ class Spectrum(Munim):
             accidental, octave = note[1:-1], note[-1]
             return Spectrum.a4_hz * 2**((pitch + Spectrum._accidental_offset[accidental])/12 + int(octave) - 4)
 
-
     def cmap(self, x: float) -> np.ndarray:
-        return self.__cmap(x)[:, :3][:, ::-1]
+        return self._cmap(x)[:, :3][:, ::-1]
 
     def normalized(self, gamma: float, highlight_clip: float, invert: bool):
         freq = self._transformed - self._transformed.min()
@@ -219,19 +221,23 @@ class Custom(Wavelet):
 
         write_wav(filepath, sample_rate, np.int16(32767 * y))
 
+
 class Lissajous(Munim):
-    def __init__(self, fps: int = 30, width: int = 1080) -> None:
-        super().__init__(fps, width, -1)
+    def __init__(self, fps: int = 30, width: int = 1080, cmap: str = 'magma') -> None:
+        super().__init__(fps, width, -1, cmap)
     
+    def cmap(self, x: np.ndarray) -> np.ndarray:
+        return self._cmap(x)[:,:,:3][:,:,::-1]
+
     def read_audio(self, filepath: str, start: float = 0, end: float = 1) -> None:
         data, self.sample_rate = open_audio(filepath)
 
         if len(data.shape) in (1, 2):
             self._audio = data[round(start * data.shape[0]):round(end * data.shape[0]) - 1]/np.abs(data).max()
 
-    def render_video(self, filepath: str, fourcc: str = 'mp4v', darken: float = 1e-3, *, sigma: float | None = None) -> None:
+    def render_video(self, filepath: str, fourcc: str = 'mp4v', darken: float = 0.05) -> None:
         self._progress.start()
-        videoout = cv2.VideoWriter(filepath, cv2.VideoWriter_fourcc(*fourcc), self.fps, (self.width, self.width), False)
+        videoout = cv2.VideoWriter(filepath, cv2.VideoWriter_fourcc(*fourcc), self.fps, (self.width, self.width), True)
         length = self.frame_length
 
         frame = np.zeros((self.width, self.width))
@@ -239,15 +245,13 @@ class Lissajous(Munim):
             pass
         else:
             for i, (right, left) in enumerate(self._audio):
-                x = int(linmap(right, (-1, 1), (0, self.width)))
-                y = int(linmap(left, (-1, 1), (0, self.width)))
-                if sigma is not None:
-                    frame = gaussian_filter(frame, sigma)
-                frame[y, x] = 255
-                frame *= 1 - darken
+                x = int(linmap(right, (-1, 1), (0, self.width - 1)))
+                y = int(linmap(left, (-1, 1), (0, self.width - 1)))
 
+                frame[y, x] += (1 - (i % length) / length) * 0.07
                 if i % length == 0:
-                    videoout.write(np.uint8(frame))
+                    frame *= 1 - darken
+                    videoout.write(np.uint8(255 * self.cmap(np.clip(frame, 0, 1))))
                     self._progress.string(i/self._audio.shape[0])
             
         self._progress.string(1)

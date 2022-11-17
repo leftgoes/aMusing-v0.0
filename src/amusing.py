@@ -21,6 +21,8 @@ class Note:
     HALF: int = 2 * QUARTER
     WHOLE: int = 2 * HALF
 
+    TUPLET: float = 2/3
+
     durations: dict[str, int] = {'whole': WHOLE,
                                   'half': HALF,
                                'quarter': QUARTER,
@@ -31,8 +33,9 @@ class Note:
                                  '128th': n128,
                                  '256th': n256}
 
+
 class Amusing:
-    first_measure_num: int = 0
+    first_measure_num: int = 1
     musescore_executable_path: str = 'MuseScore3.exe'
     temp_filename: str = '.amusing_thread'
     tempdir = '__temp__'
@@ -43,20 +46,22 @@ class Amusing:
 
     def __init__(self, width: int, outdir: str = 'frames', *, 
                        threads: int = 8, log_file: str | None = None,
-                       delete_temp: bool = True) -> None:
+                       delete_temp: bool = True, frame0: int = 0) -> None:
         self.width = width
         self.outdir = outdir
         self.threads = threads
         self.delete_temp = delete_temp
+        self.frame0 = frame0
         
         self.jobs: dict[int, int] = {}
         self.progress = Progress()
 
-        self._tree: ElementTree = None
+        self._basetree: ElementTree = None
+        self._trees: list[ElementTree] = None
         self._timesigs: np.ndarray = None
         self._score_width: float = None
         self._page_num: int = None
-        self._protected: set[Element] = None
+        self._protected: list[set[Element]] = None
 
         self.__exceptions: list[list[Exception]] = [[] for _ in range(self.threads)]
         self.__filepath: str = None
@@ -82,15 +87,10 @@ class Amusing:
         else:
             logging.warning(f'tried to remove {filepath!r} but not found')
             return False
-    
-    @staticmethod
-    def _set_invisible(element: Element) -> None:
-        visible = Element('visible')
-        visible.text = '0'
-        element.insert(0, visible)
 
-    def _set_visible(self, element: Element) -> None:
-        if element in self._protected: return
+    def _set_visible(self, element: Element, n: int) -> None:
+        if element in self._protected[n]:
+            return
         for visible in element.findall('visible'):
             element.remove(visible)
 
@@ -121,7 +121,7 @@ class Amusing:
         logging.info(f'exported {musicxml_path=!r} to {to_path=!r}')
     
     def _read_timesigs(self) -> None:
-        root = self._tree.getroot()
+        root = self._basetree.getroot()
         staves = root.findall('Score/Staff')
         self._timesigs = np.empty((len(staves[0].findall('Measure')), len(staves)))
 
@@ -145,10 +145,10 @@ class Amusing:
         try:
             temp_path = f'{self.tempdir}\\{self.temp_filename}-{n:02d}.mscx'
             measure_indices = list(self.jobs)[n::self.threads]
-            tree = copy.deepcopy(self._tree)
+            tree = self._trees[n]
             root = tree.getroot()
 
-            frame: int = 0
+            frame: int = self.frame0
             page: int = 1
             newpage: bool = False
 
@@ -167,7 +167,7 @@ class Amusing:
                         frame += frame_count
                         for measure in measures:
                             for elem in self._generate_sublevels(measure, 7):
-                                self._set_visible(elem)
+                                self._set_visible(elem, n)
 
                     else:
                         for duration_index, max_duration in enumerate(np.linspace(0, self._timesigs[measure_index, 0], frame_count, endpoint=False)):
@@ -202,7 +202,7 @@ class Amusing:
                                                     * Note.durations[duration_type]
 
                                         for elem in self._generate_sublevels(element, 5):
-                                            self._set_visible(elem)
+                                            self._set_visible(elem, n)
 
                                         if duration - 0.01 > max_duration:
                                             break
@@ -215,7 +215,7 @@ class Amusing:
 
                         for measure in measures:
                             for elem in self._generate_sublevels(measure, 7):
-                                self._set_visible(elem)
+                                self._set_visible(elem, n)
 
                 if newpage:
                     page += 1
@@ -235,23 +235,30 @@ class Amusing:
             return
         elif self.__filepath[1] == '.mscz':
             self.__convert(filepath, self.tempdir + '.score.mscx')
-            self._tree = parse_etree(self.tempdir + '.score.mscx')
+            self._basetree = parse_etree(self.tempdir + '.score.mscx')
         else:
-            self._tree = parse_etree(filepath)
-        root = self._tree.getroot()
+            self._basetree = parse_etree(filepath)
+        baseroot = self._basetree.getroot()
 
-        self._score_width = float(root.find('Score/Style/pageWidth').text)
+        self._score_width = float(baseroot.find('Score/Style/pageWidth').text)
         self._page_num = 1
-        self._protected = set()
-        for element in self._generate_sublevels(root, 8):
+        for element in self._generate_sublevels(baseroot, 8):
             if element.tag == 'LayoutBreak':
                 if element.find('subtype').text == 'page':
                     self._page_num += 1
-            elif element.tag == 'Rest':
-                if element.find('visible') is None:
-                    self._protected.add(element)
-                    self._set_invisible(element)
-        print(len(self._protected))
+        
+        self._trees = [copy.deepcopy(self._basetree) for _ in range(self.threads)]
+        self._protected = [set() for _ in range(self.threads)]
+
+        for i, subtree in enumerate(self._trees):
+            for element in self._generate_sublevels(subtree.getroot(), 8):
+                if element.tag != 'Rest': continue
+                if element.find('visible') is not None: continue
+
+                self._protected[i].add(element)
+                visible = Element('visible')
+                visible.text = '0'
+                element.append(visible)
         self._read_timesigs()
 
     def add_job(self, measures: int | Sequence[int] | None, subdivision: float) -> None:
@@ -279,7 +286,8 @@ class Amusing:
         self.progress.start()
         self._sort_jobs()
         with ThreadPoolExecutor(self.threads) as executor:
-            results = [executor.submit(self._thread, i) for i in range(self.threads)]
+            for i in range(self.threads):
+                executor.submit(self._thread, i)
         
         if sum(len(thread) for thread in self.__exceptions) > 0:
             for n, thread in enumerate(self.__exceptions):

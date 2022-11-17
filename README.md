@@ -30,6 +30,7 @@ pip install amusing
     - Morlet (DWT)
         - arbitrary spectrum
         - implemented logarithmic
+    - 2D Oscilloscope
 
 ## ToDo
 - increase efficiency of making the score
