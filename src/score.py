@@ -11,27 +11,27 @@ from .leftgoes import Progress
 
 
 class Note:
-    n256: int = 1
-    n128: int = 2 * n256
-    n64: int = 2 * n128
-    n32: int = 2 * n64
-    n16: int = 2 * n32
-    EIGHTH: int = 2 * n16
+    n256th: int = 1
+    n128th: int = 2 * n256th
+    n64th: int = 2 * n128th
+    n32th: int = 2 * n64th
+    n16th: int = 2 * n32th
+    EIGHTH: int = 2 * n16th
     QUARTER: int = 2 * EIGHTH
     HALF: int = 2 * QUARTER
     WHOLE: int = 2 * HALF
 
-    TUPLET: float = 2/3
+    TRIPLET: float = 2/3
 
     durations: dict[str, int] = {'whole': WHOLE,
                                   'half': HALF,
                                'quarter': QUARTER,
                                 'eighth': EIGHTH,
-                                  '16th': n16,
-                                  '32nd': n32,
-                                  '64th': n64,
-                                 '128th': n128,
-                                 '256th': n256}
+                                  '16th': n16th,
+                                  '32nd': n32th,
+                                  '64th': n64th,
+                                 '128th': n128th,
+                                 '256th': n256th}
 
 
 class Amusing:

@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta
+from matplotlib.cm import get_cmap
+from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
 import time
 
@@ -43,6 +45,36 @@ class Progress:
             print(f'\r{string}', end="\n" if progress == 1.0 else "")
         return string
 
+
+class Colormap:
+    @staticmethod
+    def cold(n: int = 256, gamma: float = 0.6):
+        cdict = {'red': [[0.0, 0.0, 0.0],
+                         [0.2, 0.043, 0.043],
+                         [0.4, 0.023, 0.023],
+                         [0.5, 0.074, 0.074],
+                         [0.6, 0.277, 0.277],
+                         [1.0, 0.871, 0.871]],
+               'green': [[0.0, 0.0, 0.0],
+                         [0.2, 0.094, 0.094],
+                         [0.4, 0.156, 0.156],
+                         [0.5, 0.387, 0.387],
+                         [0.6, 0.707, 0.707],
+                         [1.0, 0.961, 0.961]],
+                'blue': [[0.0, 0.0, 0.0],
+                         [0.2, 0.125, 0.125],
+                         [0.4, 0.238, 0.238],
+                         [0.5, 0.871, 0.871],
+                         [0.6, 1.0, 1.0],
+                         [1.0, 1.0, 1.0]]}
+        return LinearSegmentedColormap('cold', cdict, N=n, gamma=gamma)
+    
+    @classmethod
+    def get(cls, name: str, n: int = 256):
+        if name in cls.__dict__:
+            return cls.__getattribute__(cls, name)(n)
+        else:
+            return get_cmap(name)
 
 def linmap(x: T, from_range: tuple[T, T], to_range: tuple[T, T]) -> T:
     return to_range[0] + (to_range[1] - to_range[0]) * (x - from_range[0])/(from_range[1] - from_range[0])

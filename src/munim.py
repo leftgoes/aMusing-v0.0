@@ -1,13 +1,12 @@
 from audio2numpy import open_audio
 from collections.abc import Iterator
 import cv2
-from matplotlib.cm import get_cmap
 import numpy as np
 from scipy.io.wavfile import write as write_wav
 from scipy.ndimage import zoom, gaussian_filter
 from scipy.signal import argrelmax
 
-from .leftgoes import Progress, linmap
+from .leftgoes import Progress, linmap, Colormap
 
 NoteInfo = str | float
 
@@ -23,7 +22,7 @@ class Munim:
         self._audio: np.ndarray = None
         self._progress = Progress()
 
-        self._cmap = get_cmap(cmap)
+        self._cmap = Colormap.get(cmap)
     
     @property
     def frame_length(self) -> int:
@@ -58,22 +57,21 @@ class Spectrum(Munim):
 
         self._transformed: np.ndarray = None
 
-    @staticmethod
-    def hz(note: NoteInfo) -> float:
+    def hz(self, note: NoteInfo) -> float:
         if isinstance(note, float): return note
         elif not isinstance(note, str): raise ValueError(f'cannot get frequency from {note!r}')
 
-        pitch = Spectrum._note_offset[note[0].upper()]
+        pitch = self._note_offset[note[0].upper()]
         if len(note) == 1:
-            return Spectrum.a4_hz * 2**(pitch/12)
+            return self.a4_hz * 2**(pitch/12)
         elif len(note) == 2:
-            if note[1] in Spectrum._accidental_offset:
-                return Spectrum.a4_hz * 2**((pitch + Spectrum._accidental_offset[note[1]])/12)
+            if note[1] in self._accidental_offset:
+                return self.a4_hz * 2**((pitch + self._accidental_offset[note[1]])/12)
             else:
-                return Spectrum.a4_hz * 2**(pitch/12 + int(note[1]) - 4)
+                return self.a4_hz * 2**(pitch/12 + int(note[1]) - 4)
         else:
             accidental, octave = note[1:-1], note[-1]
-            return Spectrum.a4_hz * 2**((pitch + Spectrum._accidental_offset[accidental])/12 + int(octave) - 4)
+            return self.a4_hz * 2**((pitch + self._accidental_offset[accidental])/12 + int(octave) - 4)
 
     def cmap(self, x: float) -> np.ndarray:
         return self._cmap(x)[:, :3][:, ::-1]
