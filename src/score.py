@@ -57,6 +57,7 @@ class Amusing:
         self.progress = Progress()
 
         self._basetree: ElementTree = None
+        self._measures_num: int = None
         self._trees: list[ElementTree] = None
         self._timesigs: np.ndarray = None
         self._score_width: float = None
@@ -148,7 +149,10 @@ class Amusing:
             tree = self._trees[n]
             root = tree.getroot()
 
-            frame: int = self.frame0
+            if n == 0:
+                self._convert(tree, self.frame0, 1, temp_path)
+
+            frame: int = self.frame0 + 1
             page: int = 1
             newpage: bool = False
 
@@ -216,6 +220,10 @@ class Amusing:
                         for measure in measures:
                             for elem in self._generate_sublevels(measure, 7):
                                 self._set_visible(elem, n)
+                else:
+                    for measure in measures:
+                        for elem in self._generate_sublevels(measure, 7):
+                            self._set_visible(elem, n)
 
                 if newpage:
                     page += 1
@@ -246,6 +254,8 @@ class Amusing:
             if element.tag == 'LayoutBreak':
                 if element.find('subtype').text == 'page':
                     self._page_num += 1
+
+        self._measures_num = len(baseroot.find('Score/Staff').findall('Measure'))
         
         self._trees = [copy.deepcopy(self._basetree) for _ in range(self.threads)]
         self._protected = [set() for _ in range(self.threads)]
@@ -266,8 +276,14 @@ class Amusing:
             self.jobs.update({measures - self.first_measure_num: subdivision})
             logging.info('added job with 1 measure')
         else:
+            if isinstance(measures, range):
+                if measures.stop == -1:
+                    measures = range(measures.start, self._measures_num + self.first_measure_num)
             self.jobs.update({measure - self.first_measure_num: subdivision for measure in measures})
             logging.info(f'added job with {len(measures)} measures')
+
+    def add_job_all_measures(self, subdivision: float) -> None:
+        self.jobs.update({i: subdivision for i in range(self._measures_num)})
 
     def delete_jobs(self) -> None:
         self.jobs = {}

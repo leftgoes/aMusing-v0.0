@@ -220,7 +220,7 @@ class Custom(Wavelet):
         write_wav(filepath, sample_rate, np.int16(32767 * y))
 
 
-class Lissajous(Munim):
+class Oscillate(Munim):
     def __init__(self, fps: int = 30, width: int = 1080, cmap: str = 'magma') -> None:
         super().__init__(fps, width, -1, cmap)
     
