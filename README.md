@@ -78,11 +78,11 @@ morlet.render_video(TO_VIDEO_FILEPATH)
 
 [2d-Oscilloscope](https://en.wikipedia.org/wiki/Oscilloscope):
 ```python
-from amusing.munim import Lissajous
+from amusing.munim import Oscillate
 
-lissajous = Lissajous(fps, width)
-lissajous.read_audio(AUDIO_FILEPATH)
-lissajous.render_video(TO_VIDEO_FILEPATH)
+oscillate = Oscillate(fps, width)
+oscillate.read_audio(AUDIO_FILEPATH)
+oscillate.render_video(TO_VIDEO_FILEPATH)
 ```
 
 ## Introduction
