@@ -39,67 +39,16 @@ class Note:
                                  '256th': n256th}
 
 
-class Tremolo:
-    def __init__(self) -> None:
-        self.first: Element = None
-        self.second: Element = None
-        self.duration_start: float = None
-        self.total_trem_duration: float = None
-        self.trem_type: float = None
-        self.on: bool = False
-    
-    def __bool__(self) -> bool:
-        return self.on
-
-    def __repr__(self) -> str:
-        return f'Tremolo(duration_start={self.duration_start}, total_trem_duration={self.total_trem_duration}, on={self.on})'
-
-    def new_first(self, first: Element, trem_type: float, duration_start: float, total_trem_duration: float) -> None:
-        self.on = True
-        self.first = first
-        self.second = None
-        self.duration_start = duration_start
-        self.total_trem_duration = total_trem_duration
-        self.trem_type = trem_type
-    
-    def new_second(self, second: Element) -> None:
-        self.second = second
-
-    def reset(self) -> None:
-        self.on = False
-        self.first = None
-        self.second = None
-        self.duration_start = None
-        self.total_trem_duration = None
-        self.trem_type = None
-
-    def next(self, duration) -> bool:
-        if not self.on: return False
-
-        if duration - self.duration_start < self.total_trem_duration:
-            return True
-        else:
-            self.reset()
-            return False
-    
-    def get_visible_unvisible(self, duration) -> tuple[Element, Element] | tuple[None, None]:
-        if duration - self.duration_start % (2 * self.trem_type) < self.trem_type:
-            print('first, second')
-            return self.first, self.second  # first should be visible, second is invisible
-        else:
-            print('second, first')
-            return self.second, self.first
-
-
 class Amusing:
     first_measure_num: int = 1
+    max_tremolo: int = 16
     musescore_executable_path: str = 'MuseScore3.exe'
     temp_filename: str = '.amusing_thread'
     tempdir = '__temp__'
 
     _input_types: set[str] = {'.mscx', '.mscz'}
     _ignore_in_measure: set[str] = {'stretch', 'startRepeat', 'endRepeat', 'MeasureNumber', 'LayoutBreak', 'vspacerUp', 'vspacerDown'}
-    _chord_note_attrs: set[str] = {'Stem', 'Note/NoteDot', 'Note'}
+    _chord_note_attrs: set[str] = {'Stem', 'Note/NoteDot', 'Note', 'Hook'}
     _grace_note: set[str] = {'grace4', 'acciaccatura', 'appoggiatura', 'grace8after', 'grace16', 'grace16after', 'grace32', 'grace32after'}
 
     def __init__(self, width: int, outdir: str = 'frames', *, 
@@ -123,7 +72,8 @@ class Amusing:
         self._score_width: float = None
         self._page_num: int = None
 
-        self._protected: list[set[Element]] = None
+        self._protected_rests: list[set[Element]] = None
+        self._protected_tremolos: list[set[Element]] = None
 
         self.__exceptions: list[list[Exception]] = [[] for _ in range(self.threads)]
         self.__filepath: str = None
@@ -152,27 +102,42 @@ class Amusing:
     def _print_progress(self, *args, **kwargs) -> None:
         if self.print_progress: self._progress.string(*args, **kwargs)
 
-    def _add_protected_chord(self, chord: Element) -> None:
+    def _add_protected_chord(self, chord: Element, thread_index: int) -> None:
         for tag in self._chord_note_attrs:
-            self._protected.extend(chord.findall(tag))
+            for element in chord.findall(tag):
+                self._protected_tremolos[thread_index].add(element)
     
-    def _remove_protected_chord(self, chord: Element) -> None:
+    def _remove_protected_chord(self, chord: Element, thread_index: int) -> None:
         if chord is None: return
         for tag in self._chord_note_attrs:
             for element in chord.findall(tag):
-                self._protected.remove(element)
+                self._protected_tremolos[thread_index].remove(element)
 
-    def _set_visible(self, element: Element, n: int) -> None:
-        if element in self._protected[n]:
+    def _set_invisible(self, element: Element, thread_index: int) -> None:
+        if element in self._protected_rests[thread_index] or element in self._protected_tremolos[thread_index]:
+            return
+        if element.find('visible'): return
+        invisible = Element('visible')
+        invisible.text = '0'
+        element.append(invisible)
+
+    def _set_visible(self, element: Element, thread_index: int) -> None:
+        if element in self._protected_rests[thread_index] or element in self._protected_tremolos[thread_index]:
             return
         for visible in element.findall('visible'):
             element.remove(visible)
 
-    def _generate_sublevels(self, element: Element, n: int) -> Iterator[Element]:
+    def _generate_chord_elements(self, chord: Element) -> Iterator[Element]:
+        if chord.tag != 'Chord': return
+        for tag in self._chord_note_attrs:
+            for element in chord.findall(tag):
+                yield element
+
+    def _generate_sublevels(self, element: Element, levels: int) -> Iterator[Element]:
         yield element
-        if n >= 1:
+        if levels >= 1:
             for elem in element:
-                for e in self._generate_sublevels(elem, n - 1):
+                for e in self._generate_sublevels(elem, levels - 1):
                     yield e
     
     def _sort_jobs(self) -> None:
@@ -229,7 +194,6 @@ class Amusing:
             frame: int = self.frame0 + 1
             page: int = 1
             newpage: bool = False
-            tremolo = Tremolo()
 
             staves = [staff.findall('Measure') for staff in root.findall('Score/Staff')]
             for measure_index, measures in enumerate(zip(*staves)):  
@@ -245,17 +209,19 @@ class Amusing:
                     frame_count: int = round(self._timesigs[measure_index, 0] / subdivision)
 
                     for duration_index, max_duration in enumerate(np.linspace(0, self._timesigs[measure_index, 0], frame_count, endpoint=False)):
+                        self._protected_tremolos[thread_index] = set()
                         for staff_index, measure in enumerate(measures):
                             for voice in measure:
                                 if voice.tag in self._ignore_in_measure: continue
                                 elif voice.tag != 'voice': logging.warning(f'element with tag={voice.tag!r} in {measure_index=}, {staff_index=}')
 
-                                tremolo.reset()
-                                self._remove_protected_chord(tremolo.first)
-                                self._remove_protected_chord(tremolo.second)
-
+                                foundtremolo: bool = False
                                 duration, tuplet, dotted = 0, 1, 1
-                                for element in voice:
+                                for element_index, element in enumerate(voice):
+                                    if foundtremolo:
+                                        foundtremolo = False
+                                        continue
+
                                     if any(element.find(tag) is not None for tag in self._grace_note):
                                         pass
 
@@ -276,37 +242,30 @@ class Amusing:
                                             dotted = 1
                                         else:
                                             dotted = sum(1/2**i for i in range(int(dots.text) + 1))
-                                        chord_duration = tuplet * dotted \
-                                                       * Note.durations[duration_type]
-                                        
-                                        print(tremolo.first, tremolo.second)
-                                        if tremolo.first and not tremolo.second:
-                                            tremolo.new_second(element)
-                                            self._add_protected_chord(element)
-                                        elif (subtype := element.find('Tremolo/subtype')) is not None and subtype.text[0] == 'c':
-                                            tremolo.new_first(element, Note.WHOLE/int(subtype.text[1:]), duration, chord_duration)
-                                            self._add_protected_chord(element)
+                                        chord_duration = tuplet * dotted * Note.durations[duration_type]
 
-                                        if tremolo:
-                                            visible_chord, invisible_chord = tremolo.get_visible_unvisible(duration)
-                                            print(frame, format(duration, '.1f'), visible_chord, invisible_chord)
-                                            if visible_chord and invisible_chord:
-                                                for chord_attr in self._chord_note_attrs:
-                                                    if (chord_element := invisible_chord.find(chord_attr)) is not None:
-                                                        if (existant_visible := chord_element.find('visible')) is None:
-                                                            visible = Element('visible')
-                                                            visible.text = '0'
-                                                            chord_element.append(visible)
-                                                        else:
-                                                            existant_visible.text = '0'
-                                                self._set_visible(visible_chord, thread_index)
-                                            if not tremolo.next(duration):
-                                                self._remove_protected_chord(tremolo.first)
-                                                self._remove_protected_chord(tremolo.second)
-                                                break
+                                        tremolo = element.find('Tremolo')
+                                        if tremolo and (tremolo_subtype := tremolo.find('subtype').text)[0] == 'c':
+                                            if max_duration < chord_duration + duration and (tremolo_note := int(tremolo_subtype[1:])) <= self.max_tremolo:
+                                                tremolo_timediff = Note.WHOLE/tremolo_note * min(1, Note.QUARTER/Note.durations[duration_type])
+                                                if ((max_duration - duration) % (2 * tremolo_timediff)) / tremolo_timediff < 1:
+                                                    for chord_element in self._generate_chord_elements(element):
+                                                        self._set_visible(chord_element, thread_index)
+                                                    for chord_element in self._generate_chord_elements(voice[element_index + 1]):
+                                                        self._set_invisible(chord_element, thread_index)
+                                                else:
+                                                    for chord_element in self._generate_chord_elements(element):
+                                                        self._set_invisible(chord_element, thread_index)
+                                                    for chord_element in self._generate_chord_elements(voice[element_index + 1]):
+                                                        self._set_visible(chord_element, thread_index)
+                                                self._add_protected_chord(element, thread_index)
+                                                self._add_protected_chord(voice[element_index + 1], thread_index)
+                                                
+                                                foundtremolo = True
+                                                duration += chord_duration
+                                        else:
+                                            duration += chord_duration
                                         
-                                        duration += chord_duration
-
                                     for elem in self._generate_sublevels(element, 5):
                                         self._set_visible(elem, thread_index)
 
@@ -360,14 +319,15 @@ class Amusing:
         self._measures_num = len(baseroot.find('Score/Staff').findall('Measure'))
         
         self._trees = [copy.deepcopy(self._basetree) for _ in range(self.threads)]
-        self._protected = [set() for _ in range(self.threads)]
+        self._protected_rests = [set() for _ in range(self.threads)]
+        self._protected_tremolos = [set() for _ in range(self.threads)]
 
         for i, subtree in enumerate(self._trees):
             for element in self._generate_sublevels(subtree.getroot(), 8):
                 if element.tag == 'Rest':
                     if element.find('visible') is not None: continue
 
-                    self._protected[i].add(element)
+                    self._protected_rests[i].add(element)
                     visible = Element('visible')
                     visible.text = '0'
                     element.append(visible)
@@ -403,10 +363,9 @@ class Amusing:
 
         self._progress.start()
         self._sort_jobs()
-        self._thread(0)
-        # with ThreadPoolExecutor(self.threads) as executor:
-        #     for i in range(self.threads):
-        #         executor.submit(self._thread, i)
+        with ThreadPoolExecutor(self.threads) as executor:
+            for i in range(self.threads):
+                executor.submit(self._thread, i)
         
         if sum(len(thread) for thread in self.__exceptions) > 0:
             for n, thread in enumerate(self.__exceptions):
