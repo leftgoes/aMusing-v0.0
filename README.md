@@ -35,7 +35,7 @@ QUINTUPLET: float = 4/5
 amusing = Amusing(width=WIDTH_IN_PIXELS,
                   outdir='frames',
                   threads=NUMBER_OF_THREADS)
-amusing.read(MUSESCORE_FILEPATH)
+amusing.read_score(MUSESCORE_FILEPATH)
 amusing.add_job(measures=1,
                 subdivision=Note.n16th)
 amusing.add_job(measures=[2, 3],
@@ -51,7 +51,7 @@ amusing.delete_jobs()
 ```
 
 ### Munim
-**Mu**sic A**nim**ation (if you get the reference you'll appreciate it)
+*Mu*sic A*nim*ation
 
 Render video of the frequency spectrum using [Morlet wavelet](https://en.wikipedia.org/wiki/Morlet_wavelet)
 ```python

@@ -4,93 +4,88 @@ import copy
 import logging
 import numpy as np
 import os
+from time import sleep
+from threading import Thread
 import traceback
-from xml.etree.ElementTree import Element, ElementTree, parse as parse_etree
+from xml.etree.ElementTree import Element, ElementTree
 
 from .leftgoes import Progress
+from .mscx import MElement, parse_custom_etree
 
 
 class Note:
-    n256th: int = 1
-    n128th: int = 2 * n256th
-    n64th: int = 2 * n128th
-    n32nd: int = 2 * n64th
-    n16th: int = 2 * n32nd
-    n8th: int = 2 * n16th
-    n4th: int = 2 * n8th
-    n2nd: int = 2 * n4th
-    n1st: int = 2 * n2nd
+    def __init__(self, note_type: int) -> None:
+        self._value: float = 1024 / note_type
 
-    EIGHTH: int = n8th
-    QUARTER: int = n4th
-    HALF: int = n2nd
-    WHOLE: int = n1st
+    @property
+    def value(self) -> float:
+        return self._value
 
-    TRIPLET: float = 2/3
-
-    durations: dict[str, int] = {'whole': n1st,
-                                  'half': n2nd,
-                               'quarter': n4th,
-                                'eighth': n8th,
-                                  '16th': n16th,
-                                  '32nd': n32nd,
-                                  '64th': n64th,
-                                 '128th': n128th,
-                                 '256th': n256th}
+    @classmethod
+    def from_text(cls, text: str) -> 'Note':
+        if text == 'whole':
+            return cls(1)
+        elif text == 'half':
+            return cls(2)
+        elif text == 'quarter':
+            return cls(4)
+        elif text == 'eighth':
+            return cls(8)
+        else:
+            return cls(int(text[:-2]))
+    
+    def triplet(self) -> 'Note':
+        self._value *= 2/3
+        return self
+    
+    def n_tuplet(self, actual_notes: int, normal_notes: int) -> 'Note':
+        self._value *= normal_notes/actual_notes
+        return self
 
 
 class Amusing:
     first_measure_num: int = 1
-    max_tremolo: int = 16
     musescore_executable_path: str = 'MuseScore3.exe'
     temp_filename: str = '.amusing_thread'
     tempdir = '__temp__'
 
-    _input_types: set[str] = {'.mscx', '.mscz'}
-    _ignore_in_measure: set[str] = {'stretch', 'startRepeat', 'endRepeat', 'MeasureNumber', 'LayoutBreak', 'vspacerUp', 'vspacerDown'}
-    _chord_note_attrs: set[str] = {'Stem', 'Note/NoteDot', 'Note', 'Hook'}
-    _grace_note: set[str] = {'grace4', 'acciaccatura', 'appoggiatura', 'grace8after', 'grace16', 'grace16after', 'grace32', 'grace32after'}
-
     def __init__(self, width: int, outdir: str = 'frames', *, 
                        threads: int = 8, log_file: str | None = None,
                        delete_temp: bool = True, print_progress: bool = True,
-                       frame0: int = 0) -> None:
+                       first_emtpy_frame: bool = True, frame0: int = 0) -> None:
         self.width = width
         self.outdir = outdir
         self.threads = threads
         self.delete_temp = delete_temp
         self.print_progress = print_progress
+        self.first_emtpy_frame = first_emtpy_frame
         self.frame0 = frame0
         
-        self.jobs: dict[int, int] = {}
+        self.jobs: dict[int, Note] = {}
         self._progress = Progress()
-
-        self._basetree: ElementTree = None
+        self._tree: ElementTree = None
+        
         self._measures_num: int = None
-        self._trees: list[ElementTree] = None
-        self._timesigs: np.ndarray = None
         self._score_width: float = None
+        self._timesigs: np.ndarray = None
         self._page_num: int = None
+        self._protected_tremolos: set[MElement] = set()
 
-        self._protected_rests: list[set[Element]] = None
-        self._protected_tremolos: list[set[Element]] = None
-
-        self.__exceptions: list[list[Exception]] = [[] for _ in range(self.threads)]
-        self.__filepath: str = None
+        self._filepath: tuple[str, str] = None
 
         logging.basicConfig(filename=log_file,
                             level=logging.WARNING,
                             format='[%(levelname)s:%(filename)s:%(lineno)d] %(message)s')
 
-    @staticmethod
-    def __convert(from_path: str, to_path: str, dpi: int | None = None) -> None:
-        cmd = f'{Amusing.musescore_executable_path} {from_path} --export-to {to_path}'
+    @classmethod
+    def convert(cls, from_path: str, to_path: str, dpi: int | None = None) -> None:
+        cmd = f'{cls.musescore_executable_path} {from_path} --export-to {to_path}'
         if dpi is not None:
             cmd += f' -r {dpi}'
         os.system(cmd)
 
     @staticmethod
-    def _remove_temp(filepath: str) -> bool:
+    def remove_file(filepath: str) -> bool:
         if os.path.exists(filepath):
             os.remove(filepath)
             logging.info(f'removed {filepath!r}')
@@ -99,51 +94,21 @@ class Amusing:
             logging.warning(f'tried to remove {filepath!r} but not found')
             return False
 
+    def temp_path(self, thread_index: int) -> str:
+        return f'{self.tempdir}\\{self.temp_filename}_Thread-{thread_index:02d}.mscx'
+
     def _print_progress(self, *args, **kwargs) -> None:
         if self.print_progress: self._progress.string(*args, **kwargs)
 
-    def _add_protected_chord(self, chord: Element, thread_index: int) -> None:
-        for tag in self._chord_note_attrs:
-            for element in chord.findall(tag):
-                self._protected_tremolos[thread_index].add(element)
-    
-    def _remove_protected_chord(self, chord: Element, thread_index: int) -> None:
-        if chord is None: return
-        for tag in self._chord_note_attrs:
-            for element in chord.findall(tag):
-                self._protected_tremolos[thread_index].remove(element)
-
-    def _set_invisible(self, element: Element, thread_index: int) -> None:
-        if element in self._protected_rests[thread_index] or element in self._protected_tremolos[thread_index]:
-            return
-        if element.find('visible'): return
-        invisible = Element('visible')
-        invisible.text = '0'
-        element.append(invisible)
-
-    def _set_visible(self, element: Element, thread_index: int) -> None:
-        if element in self._protected_rests[thread_index] or element in self._protected_tremolos[thread_index]:
-            return
-        for visible in element.findall('visible'):
-            element.remove(visible)
-
-    def _generate_chord_elements(self, chord: Element) -> Iterator[Element]:
-        if chord.tag != 'Chord': return
-        for tag in self._chord_note_attrs:
-            for element in chord.findall(tag):
-                yield element
-
-    def _generate_sublevels(self, element: Element, levels: int) -> Iterator[Element]:
-        yield element
-        if levels >= 1:
-            for elem in element:
-                for e in self._generate_sublevels(elem, levels - 1):
-                    yield e
+    def _add_protected_chord(self, chord: MElement) -> None:
+        for element in chord.get_chord_subelements():
+            self._protected_tremolos.add(element)
     
     def _sort_jobs(self) -> None:
         self.jobs = dict(sorted(self.jobs.items()))
 
-    def _convert(self, tree: ElementTree, frame: int, page: int, temp_path: str) -> None:
+    def _convert(self, index: int, frame: int, page: int, tree: ElementTree) -> None:
+        temp_path = self.temp_path(index)
         self._write(tree, temp_path)
 
         to_file = os.path.join(self.outdir, f'frm{frame:04d}.png') 
@@ -155,12 +120,12 @@ class Amusing:
             else:
                 os.remove(os.path.join(self.outdir, f'frm{frame:04d}-{i}.png'))
 
-    def _export(self, musicxml_path: str, to_path: str) -> None:
-        self.__convert(musicxml_path, to_path, self.width / self._score_width)
-        logging.info(f'exported {musicxml_path=!r} to {to_path=!r}')
+    def _export(self, from_musescore_path: str, to_path: str) -> None:
+        type(self).convert(from_musescore_path, to_path, self.width / self._score_width)
+        logging.info(f'exported {from_musescore_path=!r} to {to_path=!r}')
     
     def _read_timesigs(self) -> None:
-        root = self._basetree.getroot()
+        root = self._tree.getroot()
         staves = root.findall('Score/Staff')
         self._timesigs = np.empty((len(staves[0].findall('Measure')), len(staves)))
 
@@ -168,172 +133,154 @@ class Amusing:
             for i, measure in enumerate(staff.findall('Measure')):
                 for element in measure.find('voice'):
                     if element.tag == 'TimeSig':
-                        timesig = Note.WHOLE \
+                        timesig = Note(1).value \
                                 * int(element.find('sigN').text) \
                                 / int(element.find('sigD').text) 
                     elif element.tag == 'Chord': break
                 self._timesigs[i, j] = timesig
                 if 'len' in measure.attrib:
-                    self._timesigs[i, j] = Note.WHOLE * eval(measure.attrib['len'])
+                    self._timesigs[i, j] = Note(1).value * eval(measure.attrib['len'])
 
-    def _write(self, tree: ElementTree, filepath: str) -> None:
-        tree.write(filepath, encoding='UTF-8', xml_declaration=True)
-        logging.info(f'wrote tree to {filepath=!r}')
+    def _write(self, tree: ElementTree, to_temp_path: str) -> None:
+        tree.write(to_temp_path, encoding='UTF-8', xml_declaration=True)
+        logging.info(f'wrote tree to {to_temp_path=!r}')
 
-    def _thread(self, thread_index: int) -> int | None:
-        try:
-            temp_path = f'{self.tempdir}\\{self.temp_filename}-{thread_index:02d}.mscx'
-            tree = self._trees[thread_index]
-            root = tree.getroot()
+    def _get_trees(self, max_tremolo: Note) -> Iterator[tuple[int, ElementTree]]:
+        root = self._tree.getroot()
 
-            if thread_index == 0:
-                self._convert(tree, self.frame0, 1, temp_path)
-                self._progress.start()
-                self._print_progress(0)
+        page: int = 1
+        newpage: bool = False
 
-            frame: int = self.frame0 + 1
-            page: int = 1
-            newpage: bool = False
+        self._progress.start()
+        self._print_progress(0)
 
-            staves = [staff.findall('Measure') for staff in root.findall('Score/Staff')]
-            for measure_index, measures in enumerate(zip(*staves)):  
-                for measure in measures:
-                    for voice in measure:
-                        if voice.tag == 'LayoutBreak':
-                            if voice.find('subtype').text == 'page':
-                                newpage = True
-                                break
-                
-                if measure_index in self.jobs:
-                    subdivision = self.jobs[measure_index]
-                    frame_count: int = round(self._timesigs[measure_index, 0] / subdivision)
+        if self.first_emtpy_frame:
+            yield 1, copy.deepcopy(self._tree)
+            
+        staves = [staff.findall('Measure') for staff in root.findall('Score/Staff')]
+        for measure_index, measures in enumerate(zip(*staves)):  
+            measures: tuple[MElement]
+            for measure in measures:
+                for voice in measure:
+                    if voice.tag == 'LayoutBreak':
+                        if voice.find('subtype').text == 'page':
+                            newpage = True
+                            break
+            
+            if measure_index in self.jobs:
+                subdivision = self.jobs[measure_index]
+                frame_count: int = round(self._timesigs[measure_index, 0] / subdivision.value)
 
-                    for duration_index, max_duration in enumerate(np.linspace(0, self._timesigs[measure_index, 0], frame_count, endpoint=False)):
-                        self._protected_tremolos[thread_index] = set()
-                        for staff_index, measure in enumerate(measures):
-                            for voice in measure:
-                                if voice.tag in self._ignore_in_measure: continue
-                                elif voice.tag != 'voice': logging.warning(f'element with tag={voice.tag!r} in {measure_index=}, {staff_index=}')
+                for duration_index, max_duration in enumerate(np.linspace(0, self._timesigs[measure_index, 0], frame_count, endpoint=False)):
+                    self._protected_tremolos.clear()
+                    for staff_index, measure in enumerate(measures):
+                        for voice in measure:
+                            voice: MElement
+                            if voice.is_unprintable(): continue
+                            elif voice.tag != 'voice': logging.warning(f'element with tag={voice.tag!r} in {measure_index=}, {staff_index=}')
 
-                                foundtremolo: bool = False
-                                duration, tuplet, dotted = 0, 1, 1
-                                for element_index, element in enumerate(voice):
-                                    if foundtremolo:
-                                        foundtremolo = False
-                                        continue
+                            foundtremolo: bool = False
+                            duration, tuplet, dotted = 0, 1, 1
+                            for element_index, element in enumerate(voice):
+                                element: MElement
+                                if foundtremolo:
+                                    foundtremolo = False
+                                    continue
 
-                                    if any(element.find(tag) is not None for tag in self._grace_note):
-                                        pass
+                                if element.is_gracenote():
+                                    pass
 
-                                    elif element.tag == 'location':
-                                        duration += eval(element.find('fractions').text) \
-                                                  * Note.WHOLE
-                                            
-                                    elif element.tag == 'Tuplet':
-                                        tuplet = int(element.find('normalNotes').text)/int(element.find('actualNotes').text)
-                                    
-                                    elif element.tag == 'endTuplet':
-                                        tuplet = 1
-
-                                    elif element.tag == 'Chord' or element.tag == 'Rest':
-                                        if (duration_type := element.find('durationType').text) == 'measure': break
-
-                                        if (dots := element.find('dots')) is None:
-                                            dotted = 1
-                                        else:
-                                            dotted = sum(1/2**i for i in range(int(dots.text) + 1))
-                                        chord_duration = tuplet * dotted * Note.durations[duration_type]
-
-                                        tremolo = element.find('Tremolo')
-                                        if tremolo and (tremolo_subtype := tremolo.find('subtype').text)[0] == 'c':
-                                            if max_duration < chord_duration + duration and (tremolo_note := int(tremolo_subtype[1:])) <= self.max_tremolo:
-                                                tremolo_timediff = Note.WHOLE/tremolo_note * min(1, Note.QUARTER/Note.durations[duration_type])
-                                                if ((max_duration - duration) % (2 * tremolo_timediff)) / tremolo_timediff < 1:
-                                                    for chord_element in self._generate_chord_elements(element):
-                                                        self._set_visible(chord_element, thread_index)
-                                                    for chord_element in self._generate_chord_elements(voice[element_index + 1]):
-                                                        self._set_invisible(chord_element, thread_index)
-                                                else:
-                                                    for chord_element in self._generate_chord_elements(element):
-                                                        self._set_invisible(chord_element, thread_index)
-                                                    for chord_element in self._generate_chord_elements(voice[element_index + 1]):
-                                                        self._set_visible(chord_element, thread_index)
-                                                self._add_protected_chord(element, thread_index)
-                                                self._add_protected_chord(voice[element_index + 1], thread_index)
-                                                
-                                                foundtremolo = True
-                                                duration += chord_duration
-                                        else:
-                                            duration += chord_duration
+                                elif element.tag == 'location':
+                                    duration += eval(element.find('fractions').text) * Note(1).value
                                         
-                                    for elem in self._generate_sublevels(element, 5):
-                                        self._set_visible(elem, thread_index)
+                                elif element.tag == 'Tuplet':
+                                    tuplet = element.get_tuplet()
+                                
+                                elif element.tag == 'endTuplet':
+                                    tuplet = 1
 
-                                    if duration - 0.01 > max_duration:
-                                        break
-                        
-                        if frame % self.threads == thread_index:
-                            self._convert(tree, frame, page, temp_path)
-                            if thread_index == 0:
-                                self._print_progress((measure_index + duration_index / frame_count) / len(self.jobs), suffix='Thread 0')
-                        frame += 1
+                                elif element.tag == 'Chord' or element.tag == 'Rest':
+                                    if (duration_type := element.find('durationType').text) == 'measure': break
 
-                    for measure in measures:
-                        for elem in self._generate_sublevels(measure, 7):
-                            self._set_visible(elem, thread_index)
-                else:
-                    for measure in measures:
-                        for elem in self._generate_sublevels(measure, 7):
-                            self._set_visible(elem, thread_index)
+                                    if (dots := element.find('dots')) is None:
+                                        dotted = 1
+                                    else:
+                                        dotted = sum(1/2**i for i in range(int(dots.text) + 1))
+                                    chord_duration = tuplet * dotted * Note.from_text(duration_type).value
 
-                if newpage:
-                    page += 1
-                    newpage = False
-        except KeyboardInterrupt:
-            logging.error(f'KeyboardInterrupt in thread {thread_index}')
-            return
-        except Exception as e:
-            self.__exceptions[thread_index].append(e)
-            raise
-        
-        return frame
+                                    tremolo = element.find('Tremolo')
+                                    if tremolo is not None and (tremolo_subtype := tremolo.find('subtype').text)[0] == 'c':
+                                        next_element: MElement = voice[element_index + 1]
+
+                                        if max_duration < chord_duration + duration and (tremolo_note := int(tremolo_subtype[1:])) <= max_tremolo.value:
+                                            tremolo_timediff = Note(1).value/tremolo_note * min(1, Note.from_text(duration_type).value/Note(4).value)
+                                            if ((max_duration - duration) % (2 * tremolo_timediff)) / tremolo_timediff < 1:
+                                                element.set_visible_chord()
+                                                next_element.set_invisible_chord()
+                                            else:
+                                                element.set_invisible_chord()
+                                                next_element.set_visible_chord()
+
+                                            for parent in (element, next_element):
+                                                for subelement in parent.get_chord_subelements():
+                                                    self._protected_tremolos.add(subelement)
+                                            
+                                            foundtremolo = True
+                                            duration += chord_duration
+                                    else:
+                                        self._protected_tremolos.clear()
+                                        duration += chord_duration
+                                
+                                element.set_visible_all()
+
+                                if duration - 0.01 > max_duration:
+                                    break
+                    
+                    yield page, copy.deepcopy(self._tree)
+                    self._print_progress((list(self.jobs.keys()).index(measure_index) + duration_index / frame_count) / len(self.jobs))
+
+                for measure in measures:
+                    measure.set_visible_all()
+            else:
+                for measure in measures:
+                    measure.set_visible_all()
+
+            if newpage:
+                page += 1
+                newpage = False
 
     def read_score(self, filepath: str) -> None:
-        self.__filepath = os.path.splitext(filepath)
-        if self.__filepath[1] not in self._input_types:
+        self._filepath = os.path.splitext(filepath)
+        if self._filepath[1] not in ('.mscx', '.mscz'):
             return
-        elif self.__filepath[1] == '.mscz':
-            self.__convert(filepath, self.tempdir + '.score.mscx')
-            self._basetree = parse_etree(self.tempdir + '.score.mscx')
+        elif self._filepath[1] == '.mscz':
+            type(self).convert(filepath, self.tempdir + '.score.mscx')
+            self._tree = parse_custom_etree(self.tempdir + '.score.mscx')
         else:
-            self._basetree = parse_etree(filepath)
-        baseroot = self._basetree.getroot()
+            self._tree = parse_custom_etree(filepath)
+        baseroot = self._tree.getroot()
 
         self._score_width = float(baseroot.find('Score/Style/pageWidth').text)
         self._page_num = 1
-        for element in self._generate_sublevels(baseroot, 8):
+        for element in baseroot.iter():
             if element.tag == 'LayoutBreak':
                 if element.find('subtype').text == 'page':
                     self._page_num += 1
 
         self._measures_num = len(baseroot.find('Score/Staff').findall('Measure'))
         
-        self._trees = [copy.deepcopy(self._basetree) for _ in range(self.threads)]
-        self._protected_rests = [set() for _ in range(self.threads)]
         self._protected_tremolos = [set() for _ in range(self.threads)]
 
-        for i, subtree in enumerate(self._trees):
-            for element in self._generate_sublevels(subtree.getroot(), 8):
-                if element.tag == 'Rest':
-                    if element.find('visible') is not None: continue
+        for element in baseroot.iter():
+            element: MElement
+            if element.is_invisiblity_allowed():
+                if not element.is_visible(): continue
 
-                    self._protected_rests[i].add(element)
-                    visible = Element('visible')
-                    visible.text = '0'
-                    element.append(visible)
+                element.set_invisible()
+                element.protect()
         self._read_timesigs()
 
-    def add_job(self, measures: int | Sequence[int] | None, subdivision: float) -> None:
+    def add_job(self, measures: int | Sequence[int] | None, subdivision: Note) -> None:
         if isinstance(measures, int):
             self.jobs.update({measures - self.first_measure_num: subdivision})
             logging.info('added job with 1 measure')
@@ -344,13 +291,14 @@ class Amusing:
             self.jobs.update({measure - self.first_measure_num: subdivision for measure in measures})
             logging.info(f'added job with {len(measures)} measures')
 
-    def add_job_all_measures(self, subdivision: float) -> None:
+    def add_job_all_measures(self, subdivision: Note) -> None:
         self.jobs.update({i: subdivision for i in range(self._measures_num)})
 
     def delete_jobs(self) -> None:
         self.jobs = {}
     
-    def generate_frames(self) -> None:
+    def generate_frames(self, max_tremolo: Note | None = None) -> None:
+        if max_tremolo is None: max_tremolo = Note(16)
         logging.info(f'generate frames using {self.threads} process{"es" if self.threads != 1 else ""}')
     
         if not os.path.exists(self.outdir):
@@ -363,27 +311,27 @@ class Amusing:
 
         self._progress.start()
         self._sort_jobs()
-        with ThreadPoolExecutor(self.threads) as executor:
-            for i in range(self.threads):
-                executor.submit(self._thread, i)
+        threads: list[Thread] = [Thread() for _ in range(self.threads)]
+        for frame, (page, tree) in enumerate(self._get_trees(max_tremolo), start=self.frame0):
+            while (free_thread := next((t for t in threads if not t.is_alive()), None)) is None:
+                sleep(0.05)
+            thread_index = threads.index(free_thread)
+            
+            threads[thread_index] = Thread(target=self._convert, name=f'Thread {thread_index}', args=(thread_index, frame, page, tree))
+            threads[thread_index].start()
         
-        if sum(len(thread) for thread in self.__exceptions) > 0:
-            for n, thread in enumerate(self.__exceptions):
-                if len(thread) == 0: continue
-                print('\n' + f'Exceptions Thread {n}'.center(60, '.'))
-                for e in thread:
-                    traceback.print_tb(e.__traceback__)
-            quit()
+        for thread in threads:
+            thread.join()
 
         if self.delete_temp:
             logging.info('remove temp files')
-            for n in range(self.threads):
-                self._remove_temp(f'{self.tempdir}\\{self.temp_filename}-{n:02d}.mscx')
-            if self.__filepath[1] == '.mscz':
-                self._remove_temp(self.tempdir + '.score.mscx')
+            for thread_index in range(self.threads):
+                self.remove_file(self.temp_path(thread_index))
+            if self._filepath[1] == '.mscz':
+                self.remove_file(self.tempdir + '.score.mscx')
         
         if len(os.listdir(self.tempdir)) == 0:
             os.rmdir(self.tempdir)
             logging.info('remove tempdir')
 
-        self._print_progress(1, suffix='Main Thread')
+        self._print_progress(1)
