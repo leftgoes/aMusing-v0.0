@@ -1,13 +1,11 @@
 from collections.abc import Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
 import copy
 import logging
 import numpy as np
 import os
 from time import sleep
 from threading import Thread
-import traceback
-from xml.etree.ElementTree import Element, ElementTree
+from xml.etree.ElementTree import ElementTree
 
 from .leftgoes import Progress
 from .mscx import MElement, parse_custom_etree
@@ -314,7 +312,7 @@ class Amusing:
         threads: list[Thread] = [Thread() for _ in range(self.threads)]
         for frame, (page, tree) in enumerate(self._get_trees(max_tremolo), start=self.frame0):
             while (free_thread := next((t for t in threads if not t.is_alive()), None)) is None:
-                sleep(0.05)
+                sleep(0.01)
             thread_index = threads.index(free_thread)
             
             threads[thread_index] = Thread(target=self._convert, name=f'Thread {thread_index}', args=(thread_index, frame, page, tree))
