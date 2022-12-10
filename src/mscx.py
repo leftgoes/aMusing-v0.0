@@ -1,10 +1,53 @@
-from xml.etree.ElementTree import XMLParser, Element, TreeBuilder, parse as parse_etree
+from xml.etree.ElementTree import XMLParser, Element, TreeBuilder, parse as parse_etree, SubElement
 from collections.abc import Iterator
+from typing import Self
 
 CHORD_SUB: list[str] = ['Stem', 'NoteDot', 'Note', 'Hook']
 GRACENOTE: list[str] = {'grace4', 'acciaccatura', 'appoggiatura', 'grace8after', 'grace16', 'grace16after', 'grace32', 'grace32after'}
 INVISIBLITY_ALLOWED: set[str] = {'Accidental', 'Rest'}
 UNPRINTABLE: set[str] = {'stretch', 'startRepeat', 'endRepeat', 'MeasureNumber', 'LayoutBreak', 'vspacerUp', 'vspacerDown', 'vspacerFixed'}
+
+
+class Note:
+    def __init__(self, note_type: int) -> None:
+        self._value: float = 1024 / note_type
+
+    @property
+    def value(self) -> float:
+        return self._value
+
+    @classmethod
+    def from_text(cls, text: str) -> Self:
+        if text == 'whole':
+            return cls(1)
+        elif text == 'half':
+            return cls(2)
+        elif text == 'quarter':
+            return cls(4)
+        elif text == 'eighth':
+            return cls(8)
+        else:
+            return cls(int(text[:-2]))
+    
+    def half(self) -> Self:
+        self._value /= 2
+        return self
+
+    def dot(self) -> Self:
+        self._value *= 1.5
+        return self
+    
+    def n_dot(self, dots: int) -> Self:
+        self._value *= sum(1/2**i for i in range(dots + 1))
+        return self
+
+    def triplet(self) -> Self:
+        self._value *= 2/3
+        return self
+    
+    def n_tuplet(self, actual_notes: int, normal_notes: int) -> Self:
+        self._value *= normal_notes/actual_notes
+        return self
 
 
 class ElementTagError(Exception):
@@ -16,7 +59,7 @@ class MElement(Element):
         super().__init__(tag, attrib, **extra)
         self.protected: bool = False
 
-    def _visible(self) -> tuple['MElement', bool]:
+    def _visible(self) -> tuple[Self, bool]:
         visible = self.find('visible')
         if visible is None:
             return None, True
@@ -28,20 +71,42 @@ class MElement(Element):
     def protect(self) -> None:
         self.protected = True
 
-    def get_chord_subelements(self) -> Iterator['MElement']:
+    def get_chord_subelements(self) -> Iterator[Self]:
         if self.tag != 'Chord':
             raise ElementTagError(f"MElement has tag {self.tag!r}, should be 'Chord': cannot get chord elements")
         for tag in CHORD_SUB:
             for element in self.iter(tag):
                 yield element
 
-    def get_tuplet(self) -> float:
+    def duration_value(self, timesig: float) -> float:
+        if self.tag not in ('Chord', 'Rest'):
+            raise ElementTagError(f"MElement has tag {self.tag!r}, should be 'Chord' or 'Rest': cannot get duration")
+
+        if (dots := self.find('dots')) is None:
+            dotted = 1
+        else:
+            dotted = sum(1/2**i for i in range(int(dots.text) + 1))
+        
+        duration_type_text = self.find('durationType').text
+        if duration_type_text == 'measure':
+            duration_type = timesig
+        else:
+            duration_type = Note.from_text(duration_type_text).value
+
+        return dotted, duration_type
+
+    def tuplet_value(self) -> float:
         if self.tag == 'Tuplet':
             return int(self.find('normalNotes').text)/int(self.find('actualNotes').text)
         elif self.tag == 'endTuplet':
             return 1.0
         else:
             raise ElementTagError(f"MElement has tag {self.tag!r}, should be 'Tuplet' or 'endTuplet': cannot get tuplet value")
+
+    def has_arpeggio(self) -> bool:
+        if self.tag != 'Chord':
+            raise ElementTagError()
+        return self.find('Arpeggio') is None
 
     def is_invisiblity_allowed(self) -> bool:
         return self.tag in INVISIBLITY_ALLOWED
@@ -67,9 +132,9 @@ class MElement(Element):
         if self.protected: return
 
         _, _visible = self._visible()
-        if _visible: return
+        if not _visible: return
 
-        invisible = type(self)('visible')
+        invisible = type(self)('visible', {})
         invisible.text = '0'
         self.append(invisible)
     

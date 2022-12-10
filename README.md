@@ -30,18 +30,17 @@ NUMBER_OF_THREADS: int = 8
 
 MUSESCORE_FILEPATH: str = 'score.mscx'
 
-QUINTUPLET: float = 4/5
 
 amusing = Amusing(width=WIDTH_IN_PIXELS,
                   outdir='frames',
                   threads=NUMBER_OF_THREADS)
 amusing.read_score(MUSESCORE_FILEPATH)
 amusing.add_job(measures=1,
-                subdivision=Note.n16th)
+                subdivision=Note(16))
 amusing.add_job(measures=[2, 3],
-                subdivision=Note.QUARTER * Note.TRIPLET)
+                subdivision=Note(4).triplet())
 amusing.add_job(measures=range(4, 7),
-                subdivision=Note.EIGHTH * QUINTUPLET)
+                subdivision=Note(8).n_tuplet(5, 4))
 amusing.generate_frames()
 ```
 

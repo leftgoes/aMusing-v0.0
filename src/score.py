@@ -8,37 +8,7 @@ from threading import Thread
 from xml.etree.ElementTree import ElementTree
 
 from .leftgoes import Progress
-from .mscx import MElement, parse_custom_etree
-
-
-class Note:
-    def __init__(self, note_type: int) -> None:
-        self._value: float = 1024 / note_type
-
-    @property
-    def value(self) -> float:
-        return self._value
-
-    @classmethod
-    def from_text(cls, text: str) -> 'Note':
-        if text == 'whole':
-            return cls(1)
-        elif text == 'half':
-            return cls(2)
-        elif text == 'quarter':
-            return cls(4)
-        elif text == 'eighth':
-            return cls(8)
-        else:
-            return cls(int(text[:-2]))
-    
-    def triplet(self) -> 'Note':
-        self._value *= 2/3
-        return self
-    
-    def n_tuplet(self, actual_notes: int, normal_notes: int) -> 'Note':
-        self._value *= normal_notes/actual_notes
-        return self
+from .mscx import MElement, parse_custom_etree, Note
 
 
 class Amusing:
@@ -81,6 +51,10 @@ class Amusing:
         if dpi is not None:
             cmd += f' -r {dpi}'
         os.system(cmd)
+
+    @staticmethod
+    def _last_element_in_measure(duration: float, max_duration) -> bool:
+        return duration - 0.01 > max_duration
 
     @staticmethod
     def remove_file(filepath: str) -> bool:
@@ -167,9 +141,10 @@ class Amusing:
             
             if measure_index in self.jobs:
                 subdivision = self.jobs[measure_index]
-                frame_count: int = round(self._timesigs[measure_index, 0] / subdivision.value)
+                time_sig = self._timesigs[measure_index, 0]
+                frame_count: int = round(time_sig / subdivision.value)
 
-                for duration_index, max_duration in enumerate(np.linspace(0, self._timesigs[measure_index, 0], frame_count, endpoint=False)):
+                for duration_index, max_duration in enumerate(np.linspace(0, time_sig, frame_count, endpoint=False)):
                     self._protected_tremolos.clear()
                     for staff_index, measure in enumerate(measures):
                         for voice in measure:
@@ -192,26 +167,21 @@ class Amusing:
                                     duration += eval(element.find('fractions').text) * Note(1).value
                                         
                                 elif element.tag == 'Tuplet':
-                                    tuplet = element.get_tuplet()
+                                    tuplet = element.tuplet_value()
                                 
                                 elif element.tag == 'endTuplet':
                                     tuplet = 1
 
                                 elif element.tag == 'Chord' or element.tag == 'Rest':
-                                    if (duration_type := element.find('durationType').text) == 'measure': break
-
-                                    if (dots := element.find('dots')) is None:
-                                        dotted = 1
-                                    else:
-                                        dotted = sum(1/2**i for i in range(int(dots.text) + 1))
-                                    chord_duration = tuplet * dotted * Note.from_text(duration_type).value
+                                    dotted, duration_type = element.duration_value(time_sig)
+                                    chord_duration = tuplet * dotted * duration_type
 
                                     tremolo = element.find('Tremolo')
                                     if tremolo is not None and (tremolo_subtype := tremolo.find('subtype').text)[0] == 'c':
                                         next_element: MElement = voice[element_index + 1]
 
                                         if max_duration < chord_duration + duration and (tremolo_note := int(tremolo_subtype[1:])) <= max_tremolo.value:
-                                            tremolo_timediff = Note(1).value/tremolo_note * min(1, Note.from_text(duration_type).value/Note(4).value)
+                                            tremolo_timediff = Note(1).value/tremolo_note * min(1, duration_type/Note(4).value)
                                             if ((max_duration - duration) % (2 * tremolo_timediff)) / tremolo_timediff < 1:
                                                 element.set_visible_chord()
                                                 next_element.set_invisible_chord()
@@ -227,11 +197,11 @@ class Amusing:
                                             duration += chord_duration
                                     else:
                                         self._protected_tremolos.clear()
-                                        duration += chord_duration
+                                        duration += chord_duration   
                                 
                                 element.set_visible_all()
 
-                                if duration - 0.01 > max_duration:
+                                if self._last_element_in_measure(duration, max_duration):
                                     break
                     
                     yield page, copy.deepcopy(self._tree)
@@ -245,6 +215,7 @@ class Amusing:
 
             if newpage:
                 page += 1
+                yield page, copy.deepcopy(self._tree)
                 newpage = False
 
     def read_score(self, filepath: str) -> None:
