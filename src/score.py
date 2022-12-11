@@ -1,18 +1,18 @@
-from collections.abc import Iterator, Sequence
 import copy
 import logging
 import numpy as np
 import os
 from time import sleep
 from threading import Thread
+from typing import Iterator, Sequence
 from xml.etree.ElementTree import ElementTree
 
+from . import common
 from .leftgoes import Progress
 from .mscx import MElement, parse_custom_etree, Note
 
 
 class Amusing:
-    first_measure_num: int = 1
     musescore_executable_path: str = 'MuseScore3.exe'
     temp_filename: str = '.amusing_thread'
     tempdir = '__temp__'
@@ -83,14 +83,14 @@ class Amusing:
         temp_path = self.temp_path(index)
         self._write(tree, temp_path)
 
-        to_file = os.path.join(self.outdir, f'frm{frame:04d}.png') 
+        to_file = os.path.join(self.outdir, common.frame_index_to_path(frame)) 
         self._export(temp_path, to_file)
         for i in range(1, self._page_num + 1):
             if i == page:
                 if os.path.exists(to_file): os.remove(to_file)
-                os.rename(os.path.join(self.outdir, f'frm{frame:04d}-{page}.png'), to_file)
+                os.rename(os.path.join(self.outdir, common.frame_index_to_path(frame, page)), to_file)
             else:
-                os.remove(os.path.join(self.outdir, f'frm{frame:04d}-{i}.png'))
+                os.remove(os.path.join(self.outdir, common.frame_index_to_path(frame, i)))
 
     def _export(self, from_musescore_path: str, to_path: str) -> None:
         type(self).convert(from_musescore_path, to_path, self.width / self._score_width)
@@ -251,13 +251,13 @@ class Amusing:
 
     def add_job(self, measures: int | Sequence[int] | None, subdivision: Note) -> None:
         if isinstance(measures, int):
-            self.jobs.update({measures - self.first_measure_num: subdivision})
+            self.jobs.update({measures - common.first_measure_num: subdivision})
             logging.info('added job with 1 measure')
         else:
             if isinstance(measures, range):
                 if measures.stop == -1:
-                    measures = range(measures.start, self._measures_num + self.first_measure_num)
-            self.jobs.update({measure - self.first_measure_num: subdivision for measure in measures})
+                    measures = range(measures.start, self._measures_num + common.first_measure_num)
+            self.jobs.update({measure - common.first_measure_num: subdivision for measure in measures})
             logging.info(f'added job with {len(measures)} measures')
 
     def add_job_all_measures(self, subdivision: Note) -> None:

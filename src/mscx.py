@@ -1,6 +1,5 @@
 from xml.etree.ElementTree import XMLParser, Element, TreeBuilder, parse as parse_etree, SubElement
-from collections.abc import Iterator
-from typing import Self
+from typing import Self, Iterator
 
 CHORD_SUB: list[str] = ['Stem', 'NoteDot', 'Note', 'Hook']
 GRACENOTE: list[str] = {'grace4', 'acciaccatura', 'appoggiatura', 'grace8after', 'grace16', 'grace16after', 'grace32', 'grace32after'}

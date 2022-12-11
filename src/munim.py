@@ -1,10 +1,10 @@
 from audio2numpy import open_audio
-from collections.abc import Iterator
 import cv2
 import numpy as np
 from scipy.io.wavfile import write as write_wav
 from scipy.ndimage import zoom
 from scipy.signal import argrelmax
+from typing import Iterator
 
 from .leftgoes import Progress, linmap, Colormap
 
