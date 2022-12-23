@@ -37,7 +37,6 @@ class Amusing:
         self._score_width: float = None
         self._timesigs: np.ndarray = None
         self._page_num: int = None
-        self._protected_tremolos: set[MElement] = set()
 
         self._filepath: tuple[str, str] = None
 
@@ -54,7 +53,7 @@ class Amusing:
 
     @staticmethod
     def _last_element_in_measure(duration: float, max_duration) -> bool:
-        return duration - 0.01 > max_duration
+        return max_duration < duration - 0.01
 
     @staticmethod
     def remove_file(filepath: str) -> bool:
@@ -71,10 +70,6 @@ class Amusing:
 
     def _print_progress(self, *args, **kwargs) -> None:
         if self.print_progress: self._progress.string(*args, **kwargs)
-
-    def _add_protected_chord(self, chord: MElement) -> None:
-        for element in chord.get_chord_subelements():
-            self._protected_tremolos.add(element)
     
     def _sort_jobs(self) -> None:
         self.jobs = dict(sorted(self.jobs.items()))
@@ -117,6 +112,9 @@ class Amusing:
         tree.write(to_temp_path, encoding='UTF-8', xml_declaration=True)
         logging.info(f'wrote tree to {to_temp_path=!r}')
 
+    def do_tremolo(self) -> None:
+        pass
+
     def _get_trees(self, max_tremolo: Note) -> Iterator[tuple[int, ElementTree]]:
         root = self._tree.getroot()
 
@@ -145,20 +143,23 @@ class Amusing:
                 frame_count: int = round(time_sig / subdivision.value)
 
                 for duration_index, max_duration in enumerate(np.linspace(0, time_sig, frame_count, endpoint=False)):
-                    self._protected_tremolos.clear()
                     for staff_index, measure in enumerate(measures):
                         for voice in measure:
                             voice: MElement
                             if voice.is_unprintable(): continue
                             elif voice.tag != 'voice': logging.warning(f'element with tag={voice.tag!r} in {measure_index=}, {staff_index=}')
 
-                            foundtremolo: bool = False
+                            next_tremolo_element_index: int = None
                             duration, tuplet, dotted = 0, 1, 1
                             for element_index, element in enumerate(voice):
                                 element: MElement
-                                if foundtremolo:
-                                    foundtremolo = False
+
+                                if element_index == next_tremolo_element_index:
+                                    next_tremolo_element_index = None
+                                    element.set_visible_all()
                                     continue
+                                
+                                element.set_visible_all()
 
                                 if element.is_gracenote():
                                     pass
@@ -176,31 +177,28 @@ class Amusing:
                                     dotted, duration_type = element.duration_value(time_sig)
                                     chord_duration = tuplet * dotted * duration_type
 
-                                    tremolo = element.find('Tremolo')
+                                    tremolo: MElement = element.find('Tremolo')
                                     if tremolo is not None and (tremolo_subtype := tremolo.find('subtype').text)[0] == 'c':
-                                        next_element: MElement = voice[element_index + 1]
-
-                                        if max_duration < chord_duration + duration and (tremolo_note := int(tremolo_subtype[1:])) <= max_tremolo.value:
-                                            tremolo_timediff = Note(1).value/tremolo_note * min(1, duration_type/Note(4).value)
-                                            if ((max_duration - duration) % (2 * tremolo_timediff)) / tremolo_timediff < 1:
-                                                element.set_visible_chord()
-                                                next_element.set_invisible_chord()
+                                        next_element, next_tremolo_element_index = MElement.get_next_chord(voice, element_index)
+                                        if self._last_element_in_measure(duration + chord_duration, max_duration):
+                                            if (tremolo_note := int(tremolo_subtype[1:])) <= max_tremolo.ntype + 0.01:
+                                                tremolo.set_visible()
+                                                
+                                                tremolo_timediff = Note(1).value/tremolo_note * min(1, duration_type/Note(4).value)
+                                                if ((max_duration - duration) % (2 * tremolo_timediff)) / tremolo_timediff < 1:
+                                                    element.set_visible_chord()
+                                                    next_element.set_invisible_chord()
+                                                else:
+                                                    element.set_invisible_chord()
+                                                    next_element.set_visible_chord()
                                             else:
-                                                element.set_invisible_chord()
-                                                next_element.set_visible_chord()
-
-                                            for parent in (element, next_element):
-                                                for subelement in parent.get_chord_subelements():
-                                                    self._protected_tremolos.add(subelement)
-                                            
-                                            foundtremolo = True
-                                            duration += chord_duration
-                                    else:
-                                        self._protected_tremolos.clear()
-                                        duration += chord_duration   
-                                
-                                element.set_visible_all()
-
+                                                next_element.set_visible_all()
+                                        else:
+                                            element.set_visible()
+                                            next_element.set_visible()
+                                    duration += chord_duration
+                                        
+                            
                                 if self._last_element_in_measure(duration, max_duration):
                                     break
                     
@@ -237,8 +235,6 @@ class Amusing:
                     self._page_num += 1
 
         self._measures_num = len(baseroot.find('Score/Staff').findall('Measure'))
-        
-        self._protected_tremolos = [set() for _ in range(self.threads)]
 
         for element in baseroot.iter():
             element: MElement
@@ -267,7 +263,7 @@ class Amusing:
         self.jobs = {}
     
     def generate_frames(self, max_tremolo: Note | None = None) -> None:
-        if max_tremolo is None: max_tremolo = Note(16)
+        if max_tremolo is None: max_tremolo = Note(32)
         logging.info(f'generate frames using {self.threads} process{"es" if self.threads != 1 else ""}')
     
         if not os.path.exists(self.outdir):
@@ -283,7 +279,7 @@ class Amusing:
         threads: list[Thread] = [Thread() for _ in range(self.threads)]
         for frame, (page, tree) in enumerate(self._get_trees(max_tremolo), start=self.frame0):
             while (free_thread := next((t for t in threads if not t.is_alive()), None)) is None:
-                sleep(0.01)
+                sleep(0.1)
             thread_index = threads.index(free_thread)
             
             threads[thread_index] = Thread(target=self._convert, name=f'Thread {thread_index}', args=(thread_index, frame, page, tree))

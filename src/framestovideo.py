@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from multiprocessing import Pool
 import numpy as np
 import os
+import re
 from scipy.interpolate import interp1d
 from scipy.special import comb
 from typing import Callable, Iterator, Sequence
@@ -31,7 +32,7 @@ class _WorkingFrames:
         self.first_index: int = None
         self.second_index: int = None
     
-    def read(self, frame_number: StrPath) -> np.ndarray:
+    def read_image(self, frame_number: StrPath) -> np.ndarray:
         full_path = os.path.join(self.source_dir, common.frame_index_to_path(frame_number))
         image = cv2.imread(full_path, -1)
         alpha = np.float_(image[:,:,-1]/255)
@@ -51,10 +52,10 @@ class _WorkingFrames:
         if first_index != self.first_index:
             if first_index == self.second_index:
                 self.first = self.second
-                self.second = self.read(first_index + 1)
+                self.second = self.read_image(first_index + 1)
             else:
-                self.first = self.read(first_index)
-                self.second = self.read(first_index + 1)
+                self.first = self.read_image(first_index)
+                self.second = self.read_image(first_index + 1)
             
             self.first_index = first_index
             self.second_index = first_index + 1
@@ -118,6 +119,28 @@ class FramesToVideo:
         else:
             raise ValueError(f'ktype cannot be {ktype!r}')
 
+    def read_keyframes_from_setting(self, filepath: StrPath, delta_subseconds: int = 0) -> Iterator[tuple[int, float]]:
+        with open(filepath, 'r') as f:
+            keyframes_string = re.search(r'KeyFrames = \{((.|\s)+?) \} \}\n', f.read())
+
+        if not keyframes_string:
+            return
+        
+        for line in keyframes_string.group(1).splitlines():
+            line = line.lstrip('\t')
+
+            frame_num = re.search(r'\[(.+?)\]', line)
+            if not frame_num:
+                continue
+            frame_num = int(frame_num.group()[1:-1])
+
+            value = re.search(r'] = { (.+?),', line)
+            if not value:
+                continue
+            value = float(value.group()[5:-1])
+                
+            yield frame_num - delta_subseconds, value
+
     def delta_y_to_slices(self, delta_y: int, image_shape: tuple[int, int]) -> tuple[slice, ...]:
         image_height, image_width = image_shape
 
@@ -165,6 +188,19 @@ class FramesToVideo:
         y_interp[min(x):] = interp(x_interp[min(x):])
 
         return x_interp, y_interp
+
+    def read_time_keyframes(self, filepath: StrPath, subseconds_delta: int = 0) -> None:
+        for subseconds, frame in self.read_keyframes_from_setting(filepath, subseconds_delta):
+            self.time_keyframes[Frame(subseconds - subseconds_delta)] = frame
+    
+    def read_position_keyframes(self, filepath: StrPath, subseconds_delta: int = 0, time_interp_kind: str = 'linear') -> None:
+        image_height = cv2.imread(os.path.join(self.source_dir, common.frame_index_to_path(1)), -1).shape[0]
+        _, time_interpolated = self.keyframes_interpolated('time', time_interp_kind)
+
+        for subseconds, relative_delta_y in self.read_keyframes_from_setting(filepath, subseconds_delta):
+            frame = round(time_interpolated[subseconds])
+            delta_y = round(image_height * relative_delta_y)
+            self.position_keyframes[frame] = delta_y
 
     def add_keyframes(self, pos_keyframes: dict[int, int], time_keyframes: dict[int, int]) -> None:
         self.position_keyframes.update(pos_keyframes)

@@ -1,10 +1,10 @@
 from xml.etree.ElementTree import XMLParser, Element, TreeBuilder, parse as parse_etree, SubElement
 from typing import Self, Iterator
 
-CHORD_SUB: list[str] = ['Stem', 'NoteDot', 'Note', 'Hook']
+CHORD_SUB: list[str] = ['Accidental', 'Stem', 'NoteDot', 'Note', 'Hook']
 GRACENOTE: list[str] = {'grace4', 'acciaccatura', 'appoggiatura', 'grace8after', 'grace16', 'grace16after', 'grace32', 'grace32after'}
 INVISIBLITY_ALLOWED: set[str] = {'Accidental', 'Rest'}
-UNPRINTABLE: set[str] = {'stretch', 'startRepeat', 'endRepeat', 'MeasureNumber', 'LayoutBreak', 'vspacerUp', 'vspacerDown', 'vspacerFixed'}
+UNPRINTABLE: set[str] = {'visible', 'irregular', 'stretch', 'startRepeat', 'endRepeat', 'MeasureNumber', 'LayoutBreak', 'noOffset', 'vspacerUp', 'vspacerDown', 'vspacerFixed'}
 
 
 class Note:
@@ -12,12 +12,18 @@ class Note:
         self._value: float = 1024 / note_type
 
     @property
+    def ntype(self) -> float:
+        return 1024 / self._value
+    
+    @property
     def value(self) -> float:
         return self._value
 
     @classmethod
     def from_text(cls, text: str) -> Self:
-        if text == 'whole':
+        if text == 'breve':
+            return cls(0.5)
+        elif text == 'whole':
             return cls(1)
         elif text == 'half':
             return cls(2)
@@ -56,19 +62,34 @@ class ElementTagError(Exception):
 class MElement(Element):
     def __init__(self, tag: str, attrib: dict[str, str] = ..., **extra: str) -> None:
         super().__init__(tag, attrib, **extra)
-        self.protected: bool = False
+        self.full_protected: bool = tag == 'Measure'
 
-    def _visible(self) -> tuple[Self, bool]:
+    @staticmethod
+    def get_next_chord(voice: Self, index: int) -> tuple['MElement', int]:
+        if voice.tag != 'voice':
+            raise ElementTagError(f"MElement has tag {voice.tag!r}, should be 'voice': cannot get next chord")
+        for i, subelement in enumerate(voice[index + 1:]):
+            if subelement.tag == 'Chord':
+                return subelement, i + index + 1
+
+    def _is_visible(self) -> tuple[Self, bool]:
         visible = self.find('visible')
         if visible is None:
             return None, True
-        if visible.text != '0':
-            return visible, True
         else:
-            return visible, False
+            return visible, visible.text != '0'
 
     def protect(self) -> None:
-        self.protected = True
+        self.full_protected = True
+
+    def is_protected(self) -> bool:
+        return self.full_protected
+
+    def chord_subelements(self) -> set:
+        subelems = set()
+        for elem in self.get_chord_subelements():
+            subelems.add(elem)
+        return subelems
 
     def get_chord_subelements(self) -> Iterator[Self]:
         if self.tag != 'Chord':
@@ -117,34 +138,41 @@ class MElement(Element):
         return any(subelem.tag in GRACENOTE for subelem in self)
 
     def is_visible(self) -> bool:
-        _, _visible = self._visible()
+        _, _visible = self._is_visible()
         return _visible
     
     def set_visible(self) -> None:
-        if self.protected: return
+        if self.is_protected():
+            return
 
-        e, _visible = self._visible()
-        if not _visible:
+        e, is_visible = self._is_visible()
+        if not is_visible:
             self.remove(e)
     
     def set_invisible(self) -> None:
-        if self.protected: return
+        if self.is_protected():
+            return
 
-        _, _visible = self._visible()
-        if not _visible: return
+        is_visible = self.is_visible()
+        if not is_visible: return
 
         invisible = type(self)('visible', {})
         invisible.text = '0'
         self.append(invisible)
     
-    def set_visible_all(self, tag: str | None = None) -> None:
+    def set_visible_all(self, tag: str | None = None, protected: set[Self] | None = None) -> None:
+        if protected is None:
+            protected = set()
+
         for subelement in self.iter(tag):
-            subelement: MElement
+            subelement: Self
+            if subelement in protected:
+                continue
             subelement.set_visible()
     
     def set_invisible_all(self, tag: str | None = None) -> None:
         for subelement in self.iter(tag):
-            subelement: MElement
+            subelement: Self
             subelement.set_invisible()
     
     def set_visible_chord(self) -> None:
