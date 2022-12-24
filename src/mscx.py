@@ -1,5 +1,5 @@
 from xml.etree.ElementTree import XMLParser, Element, TreeBuilder, parse as parse_etree, SubElement
-from typing import Self, Iterator
+from typing import Self, Iterator, Iterable
 
 CHORD_SUB: list[str] = ['Accidental', 'Stem', 'NoteDot', 'Note', 'Hook']
 GRACENOTE: list[str] = {'grace4', 'acciaccatura', 'appoggiatura', 'grace8after', 'grace16', 'grace16after', 'grace32', 'grace32after'}
@@ -55,9 +55,22 @@ class Note:
         return self
 
 
-class ElementTagError(Exception):
-    pass
+class MElementTagError(Exception):
+    """Raises when MElement targeted to edit has the wrong Tag"""
 
+    @classmethod
+    def from_tags(cls, actual_tag: str, possible_tags: str | Iterable[str], msg: str | None = None):
+        error_msg = f"MElement has tag {actual_tag!r}, should be "
+
+        if isinstance(possible_tags, str):
+            error_msg += repr(possible_tags)
+        else:
+            error_msg += ' or '.join(repr(tag) for tag in possible_tags)
+
+        if msg:
+            error_msg += f': {msg}'
+
+        return cls(error_msg)
 
 class MElement(Element):
     def __init__(self, tag: str, attrib: dict[str, str] = ..., **extra: str) -> None:
@@ -67,7 +80,7 @@ class MElement(Element):
     @staticmethod
     def get_next_chord(voice: Self, index: int) -> tuple['MElement', int]:
         if voice.tag != 'voice':
-            raise ElementTagError(f"MElement has tag {voice.tag!r}, should be 'voice': cannot get next chord")
+            raise MElementTagError.from_tags(voice.tag, 'voice', 'cannot get next chord')
         for i, subelement in enumerate(voice[index + 1:]):
             if subelement.tag == 'Chord':
                 return subelement, i + index + 1
@@ -93,14 +106,14 @@ class MElement(Element):
 
     def get_chord_subelements(self) -> Iterator[Self]:
         if self.tag != 'Chord':
-            raise ElementTagError(f"MElement has tag {self.tag!r}, should be 'Chord': cannot get chord elements")
+            raise MElementTagError.from_tags(self.tag, 'Chord', 'cannot get chord chord')
         for tag in CHORD_SUB:
             for element in self.iter(tag):
                 yield element
 
     def duration_value(self, timesig: float) -> float:
         if self.tag not in ('Chord', 'Rest'):
-            raise ElementTagError(f"MElement has tag {self.tag!r}, should be 'Chord' or 'Rest': cannot get duration")
+            raise MElementTagError.from_tags(self.tag, ['Chord', 'Rest'], 'cannot get duration')
 
         if (dots := self.find('dots')) is None:
             dotted = 1
@@ -115,17 +128,25 @@ class MElement(Element):
 
         return dotted, duration_type
 
+    def is_tuplet(self) -> bool:
+        return self.tag == 'Tuplet' or self.tag == 'endTuplet'
+
     def tuplet_value(self) -> float:
         if self.tag == 'Tuplet':
             return int(self.find('normalNotes').text)/int(self.find('actualNotes').text)
         elif self.tag == 'endTuplet':
             return 1.0
         else:
-            raise ElementTagError(f"MElement has tag {self.tag!r}, should be 'Tuplet' or 'endTuplet': cannot get tuplet value")
+            raise MElementTagError.from_tags(self.tag, ['Tuplet', 'endTuplet'], 'cannot get tuplet value')
+
+    def duration_offset(self) -> float:
+        if self.tag != 'location':
+            raise MElementTagError.from_tags(self.tag, 'location', 'cannot get offset')
+        return eval(self.find('fractions').text) * Note(1).value
 
     def has_arpeggio(self) -> bool:
         if self.tag != 'Chord':
-            raise ElementTagError()
+            raise MElementTagError.from_tags(self.tag, 'Chord')
         return self.find('Arpeggio') is None
 
     def is_invisiblity_allowed(self) -> bool:

@@ -1,4 +1,5 @@
 import copy
+import cv2
 import logging
 import numpy as np
 import os
@@ -74,7 +75,7 @@ class Amusing:
     def _sort_jobs(self) -> None:
         self.jobs = dict(sorted(self.jobs.items()))
 
-    def _convert(self, index: int, frame: int, page: int, tree: ElementTree) -> None:
+    def _convert(self, index: int, frame: int, page: int, tree: ElementTree, alpha_only: bool) -> None:
         temp_path = self.temp_path(index)
         self._write(tree, temp_path)
 
@@ -86,6 +87,10 @@ class Amusing:
                 os.rename(os.path.join(self.outdir, common.frame_index_to_path(frame, page)), to_file)
             else:
                 os.remove(os.path.join(self.outdir, common.frame_index_to_path(frame, i)))
+        
+        if alpha_only:
+            alpha = cv2.imread(os.path.join(self.outdir, common.frame_index_to_path(frame)), -1)[:, :, -1]
+            cv2.imwrite(os.path.join(self.outdir, common.frame_index_to_path(frame)), alpha)
 
     def _export(self, from_musescore_path: str, to_path: str) -> None:
         type(self).convert(from_musescore_path, to_path, self.width / self._score_width)
@@ -111,9 +116,6 @@ class Amusing:
     def _write(self, tree: ElementTree, to_temp_path: str) -> None:
         tree.write(to_temp_path, encoding='UTF-8', xml_declaration=True)
         logging.info(f'wrote tree to {to_temp_path=!r}')
-
-    def do_tremolo(self) -> None:
-        pass
 
     def _get_trees(self, max_tremolo: Note) -> Iterator[tuple[int, ElementTree]]:
         root = self._tree.getroot()
@@ -165,13 +167,10 @@ class Amusing:
                                     pass
 
                                 elif element.tag == 'location':
-                                    duration += eval(element.find('fractions').text) * Note(1).value
+                                    duration += element.duration_offset()
                                         
-                                elif element.tag == 'Tuplet':
+                                elif element.is_tuplet():
                                     tuplet = element.tuplet_value()
-                                
-                                elif element.tag == 'endTuplet':
-                                    tuplet = 1
 
                                 elif element.tag == 'Chord' or element.tag == 'Rest':
                                     dotted, duration_type = element.duration_value(time_sig)
@@ -197,8 +196,7 @@ class Amusing:
                                             element.set_visible()
                                             next_element.set_visible()
                                     duration += chord_duration
-                                        
-                            
+
                                 if self._last_element_in_measure(duration, max_duration):
                                     break
                     
@@ -262,7 +260,7 @@ class Amusing:
     def delete_jobs(self) -> None:
         self.jobs = {}
     
-    def generate_frames(self, max_tremolo: Note | None = None) -> None:
+    def generate_frames(self, max_tremolo: Note | None = None, *, alpha_only: bool = True) -> None:
         if max_tremolo is None: max_tremolo = Note(32)
         logging.info(f'generate frames using {self.threads} process{"es" if self.threads != 1 else ""}')
     
@@ -282,7 +280,7 @@ class Amusing:
                 sleep(0.1)
             thread_index = threads.index(free_thread)
             
-            threads[thread_index] = Thread(target=self._convert, name=f'Thread {thread_index}', args=(thread_index, frame, page, tree))
+            threads[thread_index] = Thread(target=self._convert, name=f'Thread {thread_index}', args=(thread_index, frame, page, tree, alpha_only))
             threads[thread_index].start()
         
         for thread in threads:
