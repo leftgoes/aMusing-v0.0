@@ -11,8 +11,7 @@ setup(
     long_description_content_type='text/markdown',
     url='https://github.com/leftgoes/aMusing',
     author='leftgoes (Ha Jong Kim)',
-    packages=find_packages('src'),
-    package_dir={'': 'src'},
+    packages=find_packages(),
     install_requires=['audio2numpy', 'numpy', 'opencv-python', 'scipy'],
     classifiers=[
         'Programming Language :: Python :: 3',
